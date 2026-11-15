@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from src.ingest import CachedDownloader, CacheIntegrityError, _validate_player_logs
+from src.cache import CachedDownloader, CacheIntegrityError
 
 
 def response(body=b'{"ok":true}', status=200, headers=None):
@@ -72,13 +72,14 @@ def test_pending_metadata_recovery_after_interrupted_commit(tmp_path):
     assert session.get.call_count == 1
 
 
-def test_validator_failure_does_not_cache_and_team_rows_rejected(tmp_path):
+def test_invalid_payload_is_not_cached(tmp_path):
     session = Mock()
-    session.get.return_value = response(b'{"resultSets":[{"headers":["TEAM_ID","GAME_DATE"],"rowSet":[[1,"2025-01-01"]]}]}')
+    session.get.return_value = response(b'bad')
     client = CachedDownloader(session=session, min_interval=0)
-    with pytest.raises(ValueError, match="PLAYER"):
-        client.get("https://example.com/data", tmp_path / "bad.json",
-                   validator=lambda b: _validate_player_logs(b, parquet=False))
+    def reject(payload):
+        raise ValueError('bad payload')
+    with pytest.raises(ValueError, match='bad payload'):
+        client.get('https://example.com/data', tmp_path / 'bad.json', validator=reject)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -91,12 +92,3 @@ def test_request_identity_cannot_reuse_a_different_source(tmp_path):
     with pytest.raises(CacheIntegrityError, match="identity"):
         client.get("https://example.com/data", path, params={"season": 2026})
     assert session.get.call_count == 1
-
-
-def test_local_adp_adapter_respects_requested_season_subset(tmp_path):
-    from src.ingest import read_adp_csvs
-    import pandas as pd
-    (tmp_path / "adp").mkdir()
-    pd.DataFrame({"season": [2024, 2025], "adp": [1.0, 2.0]}).to_csv(tmp_path / "adp" / "market.csv", index=False)
-    result = read_adp_csvs(raw_dir=tmp_path, seasons=[2025])
-    assert result.season.tolist() == [2025]

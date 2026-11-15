@@ -1,1 +1,1 @@
-"""Point-in-time NBA fantasy research foundation."""
+"""NBA game data, historical consensus ADP, and a chronological surge backtest."""

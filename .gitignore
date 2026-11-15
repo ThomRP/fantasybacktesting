@@ -4,9 +4,7 @@ __pycache__/
 *.egg-info/
 data/raw/*
 !data/raw/.gitkeep
-!data/raw/adp/
-data/raw/adp/*
-!data/raw/adp/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+data/player_aliases.csv
 reports/
