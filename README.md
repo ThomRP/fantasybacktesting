@@ -1,9 +1,120 @@
 # NBA fantasy backtesting foundation
 
-Download the complete runnable project, cached NBA downloads, processed Parquet tables, tests, and example report:
+Python ingestion, point-in-time queries, and standardized cohort grading. No draft simulator or UI.
 
-**[Download nba-fantasy-foundation.zip](https://github.com/ThomRP/fantasybacktesting/raw/refs/heads/main/nba-fantasy-foundation.zip)**
+The research window is **2006–07 through 2025–26**: `season` always means the **ending year**, 2007–2026. The fixed, four-season holdout is **2023–2026**. Updating the research window is an explicit configuration change, not something a later clock silently changes.
 
-Unzip the archive and open `nba-backtest/README.md` for setup and usage. Source files are also provided in this repository for review.
+## Run
 
-Verified: 39 passing tests; 503,821 accepted game-log rows; 1,902 dated ESPN ADP rows across 11 seasons; chronological benchmarks and a frozen 2022–2025 holdout. Coverage gaps and the quarantined replay game are documented inside the bundle.
+Python 3.12 is tested. From this checkout:
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock
+.venv/bin/python -m src.ingest --source sportsdataverse
+.venv/bin/python -m src.adp_archive
+.venv/bin/python -m src.player_metadata
+.venv/bin/python -m src.normalize --source sportsdataverse --enrich-bios
+.venv/bin/python -m pytest -q
+.venv/bin/python -m experiments.template --demo
+.venv/bin/python -m experiments.template --season 2025
+```
+
+`--demo` uses clearly labeled synthetic observations to exercise a trained grader. The default example uses the actual Parquet data, selects a cohort from **prior-season PPG available before the target season**, and reports missing coverage instead of inventing performance. A supplied strategy cohort can be evaluated with `--cohort /path/cohort.csv`, containing `season,canonical_player_id`.
+
+The pipeline has no database or running service. Later tasks use this existing isolated checkout; no extra worktree is needed. Downloads are cached and resumable. Never delete the raw cache simply to rerun normalization.
+
+## Data sources and current coverage
+
+* **Official NBA:** `nba_api` endpoint definitions for `LeagueGameLog` (player rows, regular season), `CommonAllPlayers`, and `CommonPlayerInfo`. Run `python -m src.ingest --source nba` followed by `python -m src.normalize --source nba` when `stats.nba.com` is reachable. Official transport currently receives a network-policy CONNECT 403 in this environment. It is implemented and mocked in tests; a live official download has not been verified.
+* **Working explicit fallback:** [SportsDataverse NBA Stats archive](https://github.com/sportsdataverse/hoopR-nba-stats-data), sourced from NBA Stats. Exact game-log URL: `https://github.com/sportsdataverse/sportsdataverse-data/releases/download/nba_stats_player_game_logs/player_game_logs_{season}.parquet`; roster URL: the same prefix with `nba_stats_rosters/rosters_{season}.parquet`. See the archive's [player-log schema](https://github.com/sportsdataverse/hoopR-nba-stats-data/blob/main/docs/datasets/player_game_logs.md). Optional metadata sources use the same release prefix with `nba_crosswalk/nba_player_crosswalk_{season}.parquet` and `espn_nba_player_core/player_core_{season}.parquet`; [crosswalk documentation](https://github.com/sportsdataverse/hoopR-nba-data/blob/main/docs/datasets/player_crosswalk.md). The adapter checks for actual player columns because older versions of this archive tag mistakenly contained team rows. Raw assets may include playoffs; normalization explicitly selects regular-season rows and recalculates fantasy scoring.
+* **Historical ADP:** local dated CSVs under `data/raw/adp/`, plus one verified, partial ESPN snapshot for **2024–25**, committed **2024-10-19**, before opening night. [Immutable CSV](https://raw.githubusercontent.com/toddehalexander/NBA_ADP_Player_Selector/8e501a78fa9989edaf532e24580f0a7365c077e1/nba-adp-All.csv), [commit evidence](https://github.com/toddehalexander/NBA_ADP_Player_Selector/commit/8e501a78fa9989edaf532e24580f0a7365c077e1). `src.adp_archive` verifies a pinned SHA256 and keeps the downloaded bytes unchanged. It stages 165 priced ESPN players; other providers and expert rankings never fill missing ESPN prices. Position ranks use the original preseason position group; overall ranks sort observed ESPN prices with deterministic name tie breaking. This is a partial market, not verified top-200 completeness.
+
+All 20 source seasons downloaded successfully, with expected unique-game counts (1230 except 2012:990, 2013:1229, 2020:1059, 2021:1080). Per-game validation requires two teams and at least five player appearances per team. Repeating ingestion verified all caches without further downloads. Source checks cannot independently certify every upstream statistic.
+
+**Current limitations:** no verified pre-2023 ADP training history is bundled. Nineteen seasons still need historical ADP CSVs. Consequently actual-data cohorts currently receive `no_training`/`missing_adp`, not claimed alpha. Synthetic tests validate the grading logic; real strategy returns remain unavailable until dated training prices are supplied. FantasyPros/ESPN archive discovery was blocked by network policy; no complete open twenty-year ADP database was established.
+
+**Replay quarantine:** NBA game `0020700367`, recorded as 2007-12-19, combines a suspended MIA–ATL game with its March replay, including Shawn Marion after his later trade. Those **23 raw rows** cannot meet exact event-date discipline and are retained separately in `data/processed/quarantine.parquet`. They are excluded from `game_logs.parquet`; all of season 2008 is marked incomplete for outcome grading so missing points cannot masquerade as end-of-season totals. Unexpected duplicate player/date keys cause normalization to fail rather than silently drop a row.
+
+Current processed data has **503,822** accepted regular-season appearances, including **2,229** rounded zero-minute appearances. NBA player logs record actual appearances; zero-minute rows are not DNP placeholders. The master contains roster-only players as well as log players. Missing master biographies remain explicit null birth dates and `UNKNOWN` positions rather than invented values; `coverage.json` reports exact coverage. Optional `src.player_metadata` enriches 184 otherwise missing biographies through explicit, bijective NBA–ESPN IDs, exact normalized names, and conflict-free dates of birth. Eight players still have null birth dates and `UNKNOWN` positions. Master position/name/bio fields can reflect later roster information and are **identity/display metadata, not historical strategy features**. Use preseason source position for historical position signals.
+
+## Layout and schemas
+
+```text
+data/raw/                  # Original cached payloads and checksum/provenance sidecars
+  adp/                     # Manual CSV inputs and clearly labeled adapter staging CSVs
+  archive_sources/         # Unmodified pinned ADP download
+  sportsdataverse/         # Original Parquet logs/rosters
+  nba/                     # Official JSON responses, when reachable
+data/processed/
+  players.parquet
+  game_logs.parquet
+  adp.parquet
+  quarantine.parquet
+  coverage.json            # Completion, gaps, scoring and processed-file checksums
+src/config.py              # Universe, season dates and configurable scoring
+src/ingest.py               # Verified caches, throttling, retries and fetch adapters
+src/normalize.py            # Entity resolution, validation, dates, scoring, Parquet
+src/adp_archive.py          # Pinned preseason ADP archive adapter
+src/player_metadata.py      # Optional strict cross-source biography enrichment
+src/benchmark.py            # Outcomes and monotone rank-to-value curves
+src/grader.py               # Chronological cohort evaluation
+experiments/template.py
+tests/test_pipeline.py
+```
+
+`players.parquet`: `canonical_player_id` (`nba:<official ID>`), `full_name`, `normalized_name`, `primary_position`, nullable `birth_date` (Arrow date32). IDs are team independent. Unicode accents, punctuation, and suffixes are normalized for matching, but ambiguous names raise; explicit IDs or source aliases resolve collisions. Conflicting known birth dates for an ID also raise.
+
+`game_logs.parquet`: `season`, exact `game_date` (date32), `canonical_player_id`, `team`, `opponent`, `minutes_or_snaps`, `fgm,fga,ftm,fta,fg3m,reb,ast,stl,blk,tov,pts`, `fantasy_points`. Dates are the source's NBA local game dates, not UTC-converted timestamps. Historical publication times and stat-correction vintages are not available; these are day-granularity game observations with an exclusive date cutoff, not intraday archival snapshots. `(season,game_date,canonical_player_id)` is unique. Scoring is the uploaded image, exactly:
+
+```python
+SCORING = {
+    "fgm": 2, "fga": -1, "ftm": 1, "fta": -1, "fg3m": 1,
+    "reb": 1, "ast": 2, "stl": 4, "blk": 4, "tov": -2, "pts": 1,
+}
+```
+
+`adp.parquet`: `season`, `canonical_player_id`, `adp`, `adp_rank`, `position_rank`, plus required `available_at` (date32) and `source` provenance. Fractional ADP prices are preserved; ranks are positive integers. All foreign keys must resolve. One source/market per season is enforced; no playerwise merging of providers or snapshot dates. When multiple snapshots exist, the latest **entire** preseason snapshot is selected.
+
+## Add historical ADP
+
+Drop CSV files into `data/raw/adp/`, then rerun normalization. Required columns:
+
+```csv
+season,canonical_player_id,adp,adp_rank,position_rank,available_at,source
+2022,nba:203999,2.3,1,1,2021-10-15,https://example.org/archived-preseason-market.csv
+```
+
+This example shows the **format only**, not a sourced historical price. Instead of `canonical_player_id`, use `nba_player_id`, or `full_name` plus optional `birth_date` for unambiguous resolution. Programmatic `PlayerResolver`/`normalize_adp` also accept an explicit alias table (`source,source_player_id,canonical_player_id`). If omitted, `adp_rank` is derived by sorting ADP/name-independent canonical ID; supply the source's rank when available. `position_rank` must be supplied from the historical market, never from the modern master position. Keep documentary evidence for `available_at`: a filename, historical season label, or today's download date alone does not prove preseason availability. The normalizer enforces dates, but cannot authenticate unsupported manual assertions.
+
+`available_at` must precede the configured season opener. Same-day snapshots are conservatively rejected because sources are modeled at day granularity. Missing prices remain missing, never estimated from actual performance. Coverage and missing-season warnings are emitted after every run. Do not mix different scoring formats or ADP providers in a research sample without an explicit research decision.
+
+## Query and grade
+
+```python
+import pandas as pd
+from src.normalize import filter_game_logs
+from src.grader import evaluate_cohort
+
+logs = pd.read_parquet("data/processed/game_logs.parquet")
+# [start,end), also strictly earlier than as_of: no same-day/future games.
+known = filter_game_logs(logs, start="2024-01-01", end="2024-01-15", as_of="2024-01-15")
+cohort = pd.DataFrame({"season": [2025], "canonical_player_id": ["nba:203999"]})
+report = evaluate_cohort(cohort)
+print(report["summary"])
+print(report["player_results"])
+```
+
+The standard entry point reads the coverage manifest and verifies completion, scoring, row counts, and saved file checksums. Incomplete seasons never train a baseline or produce a graded outcome. Direct DataFrame overrides are supported for tests/research, but callers must provide complete normalized regular seasons and validated preseason ADP, not rolling windows or DNP placeholders. Signal generation must use knowledge available before the draft; the grader cannot audit arbitrary strategy code.
+
+`benchmark.fit_expected_curve(aggregate_outcomes(logs, adp, completed_seasons=coverage["completed_seasons"]))` fits an explicitly **descriptive** all-history curve, where `coverage` is loaded from `coverage.json`. Standalone `aggregate_outcomes` and `fit_chronological_curve` accept this explicit completion set; if omitted, callers assume responsibility for complete input seasons, just as with direct grader DataFrame overrides. The grader instead refits each development season using **strictly earlier completed seasons**. All four holdout seasons use the same frozen pre-2023 training pool; none of their outcomes enter training. Isotonic regression fits separate nonincreasing total-points and PPG expectations at ranks 1–200. Predictions outside observed training rank support are clipped to the nearest fitted endpoint; sparse coverage is not proof of reliable expectations at every slot. Players with no appearances contribute zero total and undefined PPG; a wholly missing/incomplete season is not converted into zeros.
+
+`evaluate_cohort` returns `summary`, `era_breakdown`, `split_breakdown`, `player_results`, and `exclusions`. Metrics include mean/median total alpha, mean/median PPG alpha, and beat-ADP percent (`alpha_total > 0`, ties do not win). Total and PPG denominators are separate. Era buckets use ending years: 2006–2010, 2011–2015, 2016–2020, 2021–2025, 2026–2030. The last bucket contains only 2026 in this window. The holdout designation is independent of era grouping. Pre-register a strategy before inspecting holdout results; a split label cannot prevent human tuning.
+
+## Validation
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+Behavioral tests exercise exact scoring, immutable-cache/checksum/retry recovery, typed Parquet round trips, traded-player identity, ambiguous-name rejection, duplicate detection, exclusive knowledge cutoffs, valid ADP joins and provenance, monotonic curves, chronological/frozen training, absent-season handling, zero-game PPG, coverage-manifest integrity, and all reported metric denominators. Tests use deterministic fixtures and do not hit remote APIs. Actual artifact coverage and source rows are separately validated by the commands above.
