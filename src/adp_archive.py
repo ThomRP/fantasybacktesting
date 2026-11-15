@@ -1,10 +1,9 @@
-"""Import a small, immutable, preseason ESPN ADP archive.
+"""Import dated historical ESPN ADP, preserving existing local inputs.
 
-The public mirror committed this CSV on 2024-10-19, before the 2024-25
-opening game. This is one partial preseason snapshot, not a historical ADP
-database. The original download is retained unchanged; the adapter output in
-raw/adp is a local staging CSV consumed by the normalizer. Name resolution is
-deliberately left to the normalizer's strict master-player resolver.
+The default command checks the FantasyPros historical ESPN archives and keeps
+the original pinned 2024-25 snapshot. Use --pinned-only for the earlier behavior.
+Original downloads remain unchanged; adapter outputs and a coverage report live
+under raw/adp. Missing dates and prices are never inferred from outcomes.
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from .config import RAW_DIR
+from .config import RAW_DIR, PROCESSED_DIR, SEASONS
 from .ingest import CachedDownloader, CacheIntegrityError
 
 LOGGER = logging.getLogger(__name__)
@@ -115,7 +114,7 @@ def fetch_pinned_2025_espn_adp(*, raw_dir: Path = RAW_DIR,
     )
     LOGGER.warning(
         "Staged partial ESPN 2025 snapshot: %d priced players, ADP %.2f–%.2f; "
-        "other seasons still require dated ADP CSVs", len(frame), frame.adp.min(), frame.adp.max()
+        "historical archive coverage is checked separately", len(frame), frame.adp.min(), frame.adp.max()
     )
     return target
 
@@ -123,9 +122,24 @@ def fetch_pinned_2025_espn_adp(*, raw_dir: Path = RAW_DIR,
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", type=Path, default=RAW_DIR)
+    parser.add_argument("--processed-dir", type=Path, default=PROCESSED_DIR)
+    parser.add_argument("--seasons", type=int, nargs="+", choices=SEASONS, default=list(SEASONS))
+    parser.add_argument("--pinned-only", action="store_true", help="Only import the original pinned 2025 ESPN snapshot")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    fetch_pinned_2025_espn_adp(raw_dir=args.raw_dir)
+    other_2025 = []
+    for path in (args.raw_dir / "adp").glob("*.csv"):
+        frame = pd.read_csv(path)
+        if path.name != "espn_2025.csv" and "season" in frame and frame.season.eq(2025).any():
+            other_2025.append(path)
+    if (2025 in args.seasons or args.pinned_only) and not other_2025:
+        fetch_pinned_2025_espn_adp(raw_dir=args.raw_dir)
+    if not args.pinned_only:
+        from .fantasypros_adp import fetch_archives
+        report = fetch_archives(raw_dir=args.raw_dir, processed_dir=args.processed_dir, seasons=args.seasons)
+        counts = pd.Series([row["status"] for row in report["results"]]).value_counts().to_dict()
+        print(json.dumps({"season_status_counts": counts,
+                          "report": str(args.raw_dir / "adp" / "coverage_report.json")}, indent=2))
     return 0
 
 

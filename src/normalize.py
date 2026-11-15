@@ -42,6 +42,7 @@ ADP_SCHEMA = pa.schema([
     ("adp", pa.float64()), ("adp_rank", pa.int64()),
     ("position_rank", pa.int64()), ("available_at", pa.date32()),
     ("source", pa.string()),
+    ("position_rank_status", pa.string()),
 ])
 
 
@@ -305,10 +306,21 @@ def normalize_adp(raw: pd.DataFrame, players: pd.DataFrame, *, aliases=None) -> 
     if "adp_rank" not in frame:
         frame = frame.sort_values(["season", "adp", "canonical_player_id"])
         frame["adp_rank"] = frame.groupby("season").cumcount() + 1
-    for column in ["adp_rank", "position_rank"]:
-        frame[column] = _integers(frame[column], column)
-        if frame[column].le(0).any():
-            raise ValueError(f"{column} must be positive")
+    frame["adp_rank"] = _integers(frame.adp_rank, "adp_rank")
+    if frame.adp_rank.le(0).any():
+        raise ValueError("adp_rank must be positive")
+    if "position_rank_status" not in frame:
+        frame["position_rank_status"] = "provided"
+    frame["position_rank_status"] = frame.position_rank_status.fillna("provided")
+    unknown_position = frame.position_rank_status.eq("unavailable_historical_positions")
+    if not frame.position_rank_status.isin(["provided", "unavailable_historical_positions"]).all():
+        raise ValueError("Unrecognized position_rank_status")
+    if not frame.position_rank.isna().eq(unknown_position).all():
+        raise ValueError("Missing position_rank requires explicit unavailable_historical_positions status")
+    valid_positions = _integers(frame.loc[~unknown_position, "position_rank"], "position_rank")
+    if valid_positions.le(0).any():
+        raise ValueError("position_rank must be positive")
+    frame["position_rank"] = pd.to_numeric(frame.position_rank).astype("Int64")
     if frame.duplicated(["season", "adp_rank"]).any():
         raise ValueError("ADP ranks must be unique within each season")
     ordered = frame.sort_values(["season", "adp_rank"])
@@ -396,6 +408,7 @@ def main():
     adp = normalize_adp(read_adp_csvs(raw_dir=args.raw_dir, seasons=args.seasons), players)
     report = {"seasons": sorted(games.season.unique().tolist()), "players": len(players), "game_logs": len(games),
               "adp": len(adp), "missing_adp_seasons": sorted(set(args.seasons) - set(adp.season)),
+              "missing_adp_position_ranks": int(adp.position_rank.isna().sum()),
               "missing_birth_date": int(players.birth_date.isna().sum()),
               "unknown_position": int(players.primary_position.eq("UNKNOWN").sum()), "scoring": SCORING,
               "source": args.source, "supplemental_bio_players": int(supplemental_count), "season_coverage": season_coverage, "quarantined_rows": len(quarantined),
