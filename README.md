@@ -2,34 +2,57 @@
 
 Download historical FantasyPros average draft position (ADP) and ESPN NBA game data for the same season. The files are inputs for backtesting how players performed relative to where they were drafted.
 
-## Install
+## Install and run
 
-From the repository root, using Python 3.10 or later:
+Use Python 3.10 or later and run the commands from the repository root. Set up the virtual environment once, then choose a download command for your OS.
+
+### Windows (PowerShell)
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+```powershell
+# FantasyPros year=2019 if the page is for the 2019–20 draft
+.\.venv\Scripts\python.exe download.py 2019 --adp-year-is start
+
+# FantasyPros year=2019 if the page is for the 2018–19 draft
+.\.venv\Scripts\python.exe download.py 2018 --adp-year-is end
+
+# FantasyPros years 2015 through 2025 if the page uses the start year
+.\.venv\Scripts\python.exe download.py 2015 2025 --adp-year-is start
+
+# 2018–19 game data with play-by-play
+.\.venv\Scripts\python.exe download.py 2018 --games-only --play-by-play
+```
+
+### macOS and Linux
 
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-## Download
-
-The positional year is the **start of the NBA season**. Check the season label on the FantasyPros page and use `--adp-year-is` to say how its `year` parameter maps to that season. Both commands below request FantasyPros `year=2019`:
-
 ```sh
-# If it is the ADP for 2019–20
+# FantasyPros year=2019 if the page is for the 2019–20 draft
 .venv/bin/python download.py 2019 --adp-year-is start
 
-# If it is the ADP for 2018–19
+# FantasyPros year=2019 if the page is for the 2018–19 draft
 .venv/bin/python download.py 2018 --adp-year-is end
-```
 
-Add a second starting year for an inclusive range. For example, use `2015 2025 --adp-year-is start` to request FantasyPros years 2015 through 2025 under the start-year convention. Each season needs a populated ADP table before its game files are requested. Failures are printed by season, and a run with any failures exits with a nonzero status.
+# FantasyPros years 2015 through 2025 if the page uses the start year
+.venv/bin/python download.py 2015 2025 --adp-year-is start
 
-Use `--games-only` to fetch the game files independently of FantasyPros. Add `--play-by-play` for event-level data, which can add several hundred MB per season. For example:
-
-```sh
+# 2018–19 game data with play-by-play
 .venv/bin/python download.py 2018 --games-only --play-by-play
 ```
+
+## Download options
+
+The positional year is the **start of the NBA season**. Add a second starting year to download an inclusive range. Check the season label on the FantasyPros page and use `--adp-year-is start` or `--adp-year-is end` to match its `year` parameter.
+
+Each season needs a populated ADP table before the downloader requests its game files. Use `--games-only` to skip the ADP lookup. Add `--play-by-play` for event-level data, which can add several hundred MB per season. The downloader reports failures by season and exits with a nonzero status if any season fails.
 
 ## Files
 
