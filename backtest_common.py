@@ -260,7 +260,7 @@ def adp_slot_points(totals, adp):
 
 
 def lineup_details(player):
-    if player is None:
+    if player is None or not player.total_games:
         return {"next_starts": 0, "next_start_pct": None, "next_lineup_role": "No games"}
     if player.games_without_start_status:
         return {"next_starts": None, "next_start_pct": None, "next_lineup_role": "Unknown"}
@@ -273,7 +273,7 @@ def lineup_details(player):
     }
 
 
-def draft_outcomes(following, prior_players, following_players, *, match_prior_only=False):
+def draft_outcomes(following, prior_players, following_players, *, match_prior_only=False, rank_per_game=False):
     # Match the draft to ESPN by name, then track the athlete by ESPN ID.
     athlete_ids = defaultdict(set)
     player_sets = (prior_players,) if match_prior_only else (prior_players, following_players)
@@ -282,11 +282,16 @@ def draft_outcomes(following, prior_players, following_players, *, match_prior_o
             for name in player.names:
                 athlete_ids[name_key(name)].add(athlete_id)
 
-    # Rank the entire NBA player pool. Tied totals receive the same rank.
-    totals = sorted((player.total_points for player in following_players.values()), reverse=True)
-    rank_by_total = {}
-    for place, total in enumerate(totals, start=1):
-        rank_by_total.setdefault(total, place)
+    # Rank the entire NBA player pool before rounding any scores. Ties share a rank.
+    if rank_per_game:
+        scores = {athlete_id: player.total_points / player.total_games
+                  for athlete_id, player in following_players.items() if player.total_games}
+    else:
+        scores = {athlete_id: player.total_points for athlete_id, player in following_players.items()}
+    leaderboard = sorted(scores.values(), reverse=True)
+    rank_by_score = {}
+    for place, score in enumerate(leaderboard, start=1):
+        rank_by_score.setdefault(score, place)
 
     picks = list(read_adp(following / "adp.csv"))
     if not picks:
@@ -304,19 +309,27 @@ def draft_outcomes(following, prior_players, following_players, *, match_prior_o
 
         after = following_players.get(athlete_id)
         actual_points = after.total_points if after else 0
-        pick_points = adp_slot_points(totals, adp)
-        rank = rank_by_total[actual_points] if after else None
-        outcomes.append((name, athlete_id, {
+        score = scores.get(athlete_id)
+        pick_score = adp_slot_points(leaderboard, adp)
+        rank = rank_by_score.get(score)
+        outcome = {
             "adp": adp,
             "next_games": after.total_games if after else 0,
             "next_total_fpts": actual_points,
             "next_rank": rank,
             "adp_slots_gained": round(adp - rank, 3) if rank is not None else None,
-            "beat_adp": rank is not None and rank < adp,
-            "adp_slot_fpts": round(pick_points, 3),
-            "fpts_above_adp": round(actual_points - pick_points, 3),
-            **lineup_details(after),
-        }))
+            "beat_adp": rank < adp if rank is not None else (None if rank_per_game else False),
+        }
+        if rank_per_game:
+            outcome.update(
+                next_fppg=round(score, 3) if score is not None else None,
+                adp_slot_fppg=round(pick_score, 3),
+                fppg_above_adp=round(score - pick_score, 3) if score is not None else None,
+            )
+        else:
+            outcome.update(adp_slot_fpts=round(pick_score, 3), fpts_above_adp=round(actual_points - pick_score, 3))
+        outcome.update(lineup_details(after))
+        outcomes.append((name, athlete_id, outcome))
     return outcomes, len(picks)
 
 
@@ -395,51 +408,65 @@ def write_csv(output, rows, *, fieldnames=None):
         writer.writerows(rows)
 
 
-def value_metrics(rows):
+def adp_hit_counts(rows):
+    scored = [row["beat_adp"] for row in rows if row["beat_adp"] is not None]
+    return sum(scored), len(scored)
+
+
+def value_metrics(rows, *, per_game=False):
+    unit = "fppg" if per_game else "fpts"
+    margin_key = f"{unit}_above_adp"
     slots = [row["adp_slots_gained"] for row in rows if row["adp_slots_gained"] is not None]
-    margins = sorted(row["fpts_above_adp"] for row in rows)
+    scored = [row for row in rows if row[margin_key] is not None]
+    margins = sorted(row[margin_key] for row in scored)
     trim_per_tail = len(margins) // 10
     trimmed = margins[trim_per_tail:len(margins) - trim_per_tail]
-    low_games = [row["fpts_above_adp"] for row in rows if row["next_games"] <= 10]
-    other_games = [row["fpts_above_adp"] for row in rows if row["next_games"] > 10]
+    low_games = [row[margin_key] for row in scored if row["next_games"] <= 10]
+    other_games = [row[margin_key] for row in scored if row["next_games"] > 10]
     return {
         "ranked_players": len(slots),
         "avg_adp_slots_gained_ranked": round(mean(slots), 1) if slots else None,
-        "avg_fpts_above_adp": round(mean(margins), 1) if margins else None,
+        f"avg_{margin_key}": round(mean(margins), 1) if margins else None,
         "median_adp_slots_gained_ranked": round(median(slots), 1) if slots else None,
-        "median_fpts_above_adp": round(median(margins), 1) if margins else None,
-        "trimmed_avg_fpts_above_adp": round(mean(trimmed), 1) if trimmed else None,
+        f"median_{margin_key}": round(median(margins), 1) if margins else None,
+        f"trimmed_avg_{margin_key}": round(mean(trimmed), 1) if trimmed else None,
         "trimmed_players_per_tail": trim_per_tail,
         "players_10_games_or_fewer": len(low_games),
-        "fpts_contribution_10_games_or_fewer": round(sum(low_games) / len(rows), 1) if rows else None,
-        "avg_fpts_above_adp_over_10_games": round(mean(other_games), 1) if other_games else None,
+        f"{unit}_contribution_10_games_or_fewer": round(sum(low_games) / len(scored), 1) if scored else None,
+        f"avg_{margin_key}_over_10_games": round(mean(other_games), 1) if other_games else None,
     }
 
 
-def format_value_metrics(metrics):
-    result = f"{metrics['avg_fpts_above_adp']:+.1f} avg FPTS vs ADP, {metrics['median_fpts_above_adp']:+.1f} median"
+def format_value_metrics(metrics, *, per_game=False):
+    unit = "fppg" if per_game else "fpts"
+    margin_key = f"{unit}_above_adp"
+    result = f"{metrics[f'avg_{margin_key}']:+.1f} avg {unit.upper()} vs ADP, {metrics[f'median_{margin_key}']:+.1f} median"
     if metrics["trimmed_players_per_tail"]:
-        result += f", {metrics['trimmed_avg_fpts_above_adp']:+.1f} trimmed avg"
+        result += f", {metrics[f'trimmed_avg_{margin_key}']:+.1f} trimmed avg"
     if metrics["players_10_games_or_fewer"]:
         count = metrics["players_10_games_or_fewer"]
-        contribution = metrics["fpts_contribution_10_games_or_fewer"]
-        result += f", 0-10 games: {count} ({contribution:+.1f} FPTS per pick)"
+        contribution = metrics[f"{unit}_contribution_10_games_or_fewer"]
+        minimum = 1 if per_game else 0
+        result += f", {minimum}-10 games: {count} ({contribution:+.1f} {unit.upper()} per pick)"
     if metrics["ranked_players"]:
         result += f", {metrics['avg_adp_slots_gained_ranked']:+.1f} avg slots ({metrics['ranked_players']} ranked)"
     return result
 
 
-def report_results(output, results, cohort_column, label, other_label="Other eligible players"):
+def report_results(output, results, cohort_column, label, other_label="Other eligible players", *, per_game=False):
     if not results:
         raise ValueError("no eligible player-seasons found. Use consecutive downloaded seasons with ADP in the later season")
 
     write_csv(output, results)
     for group_label, matched in ((label, True), (other_label, False)):
         group = [row for row in results if row[cohort_column] == matched]
-        hits = sum(row["beat_adp"] for row in group)
-        if group:
-            print(f"{group_label}: {hits}/{len(group)} beat ADP ({hits / len(group):.1%}), "
-                  f"{format_value_metrics(value_metrics(group))}")
+        hits, count = adp_hit_counts(group)
+        if count:
+            unranked = f", {len(group) - count} unranked" if count < len(group) else ""
+            print(f"{group_label}: {hits}/{count} beat ADP ({hits / count:.1%}){unranked}, "
+                  f"{format_value_metrics(value_metrics(group, per_game=per_game), per_game=per_game)}")
+        elif group:
+            print(f"{group_label}: {len(group)} unranked player-seasons")
         else:
             print(f"{group_label}: no eligible player-seasons")
     print(f"Saved {len(results)} player-seasons to {output}")

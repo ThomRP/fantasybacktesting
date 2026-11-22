@@ -112,7 +112,7 @@ Results go to `data/backtest_decline_results.csv`. Add `--ages 23 29` to either 
 
 ## Second-year players
 
-The rookie season is the first season a player appeared in a regular-season NBA game. The test compares their ADP in the immediately following season with their finish by total regular-season fantasy points. It prints hit rates for second-year players and other drafted players who played the prior season. A matched player who misses the entire next season counts as a miss.
+The rookie season is the first season a player appeared in a regular-season NBA game. The test compares their ADP in the immediately following season with their league-wide rank by regular-season fantasy points per game (FPPG). Every player with at least one appearance is eligible for the ranking, and `next_games` shows the sample size. Players with zero appearances are reported as unranked and are excluded from the per-game hit rate and value averages.
 
 **Windows (PowerShell)**
 
@@ -134,13 +134,13 @@ Results go to `data/backtest_rookie_results.csv`. The `second_year` column ident
 
 This group includes sophomores who started their team's first regular-season game and started **more than half** of their own regular-season appearances. Find their aggregate results in the `opener_majority` row of `data/backtest_rookie_summary.csv` and individual results in `data/backtest_rookie_opener_majority.csv`.
 
-Open `data/backtest_rookie_opener_majority.pdf` for three plots covering all qualifying players, those who beat ADP, and those who tied or missed ADP. Each plot shows slots gained or lost with each player's ADP, finish rank, starts, games played, and fantasy points versus ADP.
+Open `data/backtest_rookie_opener_majority.pdf` for three plots covering all qualifying players, those who beat ADP, and those who tied or missed ADP. Each plot shows slots gained or lost by FPPG rank, with each player's ADP, starts, games played, actual FPPG, and FPPG versus ADP.
 
 ### Other breakdowns
 
 The test also prints how many second-year players beat ADP by lineup role, rookie position, and exact listed height. `data/backtest_rookie_summary.csv` contains the overall rate and each breakdown with player counts.
 
-A regular starter started at least half of their second-year regular-season appearances. The test compares them with players who started fewer than half and reports players with no appearances or incomplete starter flags separately. Finish rank uses total fantasy points from all regular-season appearances. The player-level CSV includes `next_starts`, `next_start_pct`, and `next_lineup_role`.
+A regular starter started at least half of their second-year regular-season appearances. The test compares them with players who started fewer than half and reports players with no appearances or incomplete starter flags separately. The player-level CSV includes `next_starts`, `next_start_pct`, and `next_lineup_role`.
 
 The `opening_lineup` rows compare all sophomores who started their NBA team's first regular-season game with the other sophomores. This includes opening starters who later lost their starting role. `opening_lineup_among_regular_starters` splits the season-long regular starters by the same opener status. Each row includes average ADP. Filter the player-level CSV by `second_year`, `next_lineup_role`, and `next_opener_role` to inspect the individual picks. The CSV records the team, game ID, and date for verified opener starts. A missing team lineup can leave a role `Unknown`.
 
@@ -179,13 +179,13 @@ The backtests report hit rate alongside two measures of how large the gains and 
 - **Average ADP slots gained** is ADP minus finish rank, averaged over players with a rank. Positive means a better finish rank than ADP. The reports show the ranked sample size.
 - **Average FPTS above ADP** is actual regular-season fantasy points minus the points scored at the player's ADP slot on that season's league-wide leaderboard. Fractional ADPs interpolate between adjacent slots. The benchmark has a zero floor, and a player who missed the season scores zero actual points in this calculation.
 
-The player-level files show `adp_slot_fpts` and `fpts_above_adp` for each pick. The cluster and rookie summary CSVs include the averages, and the surge and decline tests print them by group. Compare each group's average with the corresponding overall or comparison group value in the same run.
+The surge, decline, and cluster backtests use season totals and show `adp_slot_fpts` and `fpts_above_adp`. The rookie backtest uses the same comparison on the per-game leaderboard, with `next_fppg`, `adp_slot_fppg`, and `fppg_above_adp` in the player-level files. Summary CSVs and console reports use the units of their respective leaderboard. Compare each group's average with the corresponding overall or comparison group value in the same run.
 
 ### Low-game and outlier sensitivity
 
-The median shows the typical pick. The trimmed mean removes 10% of outcomes from each end, rounded down to a whole player count shown in `trimmed_players_per_tail`. The full mean includes every pick in the group.
+The median shows the typical pick. The trimmed mean removes 10% of scored outcomes from each end, rounded down to a whole player count shown in `trimmed_players_per_tail`. The full mean includes every scored pick in the group.
 
-The reports count players with 0–10 games and show how many points they contributed per pick to the full mean. That contribution is their total FPTS margin divided by the entire group's size. `avg_fpts_above_adp_over_10_games` shows the mean among the rest. These are retrospective sensitivity checks using actual games played.
+The reports show the contribution of low-game players to the full mean. That contribution is their sum of margins divided by the number of scored picks. The season-total backtests count 0–10 games and the per-game rookie backtest counts 1–10. The `avg_fpts_above_adp_over_10_games` or `avg_fppg_above_adp_over_10_games` column shows the mean among the rest. These are retrospective sensitivity checks using actual games played.
 
 The player-level files include `next_lineup_role` and `next_start_pct` for checking lineup changes. The rookie summary already reports value by second-year lineup role.
 

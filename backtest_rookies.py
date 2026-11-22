@@ -1,4 +1,4 @@
-"""Check whether players beat ADP the season after their NBA debut."""
+"""Check whether players beat ADP by fantasy points per game after their NBA debut."""
 
 import math
 from collections import defaultdict
@@ -7,7 +7,7 @@ from statistics import mean
 from tempfile import TemporaryDirectory
 
 from backtest_common import (
-    draft_outcomes, format_value_metrics, load_player_profiles, name_key, player_lines, read_csv,
+    adp_hit_counts, draft_outcomes, format_value_metrics, load_player_profiles, name_key, player_lines, read_csv,
     regular_season_game, report_results, run_cli, season_pairs, value_metrics, write_csv,
 )
 from backtest_rookie_plots import write_starter_plots
@@ -128,15 +128,16 @@ def is_opener_majority_starter(row):
 
 
 def hit_rate_row(breakdown, group, rows):
-    hits = sum(row["beat_adp"] for row in rows)
+    hits, count = adp_hit_counts(rows)
     return {
         "breakdown": breakdown,
         "group": group,
         "players": len(rows),
         "beat_adp": hits,
-        "beat_adp_pct": round(100 * hits / len(rows), 1) if rows else None,
+        "beat_adp_pct": round(100 * hits / count, 1) if count else None,
         "avg_adp": round(mean(row["adp"] for row in rows), 1) if rows else None,
-        **value_metrics(rows),
+        "unranked_players": len(rows) - count,
+        **value_metrics(rows, per_game=True),
     }
 
 
@@ -179,15 +180,19 @@ def report_rookie_breakdown(output, results):
     write_csv(output, summary)
     for row in summary[1:]:
         label = f"{row['breakdown'].replace('_', ' ').title()} {row['group']}"
-        if row["players"]:
-            print(f"{label}: {row['beat_adp']}/{row['players']} beat ADP ({row['beat_adp_pct']:.1f}%), "
-                  f"{format_value_metrics(row)}")
+        if row["ranked_players"]:
+            unranked = f", {row['unranked_players']} unranked" if row["unranked_players"] else ""
+            print(f"{label}: {row['beat_adp']}/{row['ranked_players']} beat ADP ({row['beat_adp_pct']:.1f}%){unranked}, "
+                  f"{format_value_metrics(row, per_game=True)}")
+        elif row["players"]:
+            print(f"{label}: {row['players']} unranked player-seasons")
         else:
             print(f"{label}: no eligible player-seasons")
     print(f"Saved second-year breakdown to {output}")
 
 
 def run_backtest(data):
+    print("Ranking rookie backtest outcomes by regular-season fantasy points per game")
     played_before = set()
     archive_through = FIRST_ARCHIVE_YEAR - 1
     results = []
@@ -207,7 +212,7 @@ def run_backtest(data):
         opener_starters, opener_lineups_complete = read_opening_lineups(following)
         rookies = prior_players.keys() - played_before
         played_before.update(prior_players)
-        outcomes, total_picks = draft_outcomes(following, prior_players, following_players)
+        outcomes, total_picks = draft_outcomes(following, prior_players, following_players, rank_per_game=True)
         rows = [
             {
                 "prior_season": prior.name,
@@ -234,7 +239,7 @@ def run_backtest(data):
         results.extend(rows)
 
     report_results(data / "backtest_rookie_results.csv", results, "second_year",
-                   "Second-year players", "Other returning players")
+                   "Second-year players", "Other returning players", per_game=True)
     report_rookie_breakdown(data / "backtest_rookie_summary.csv", results)
     cohort = [row for row in results if row["opener_majority_starter"]]
     cohort.sort(key=lambda row: (-row["adp_slots_gained"], row["player"].casefold(), row["draft_season"]))

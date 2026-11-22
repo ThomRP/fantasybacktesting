@@ -1,4 +1,4 @@
-"""Render player-level ADP outcomes for second-year opening-game starters."""
+"""Render FPPG-ranked ADP outcomes for second-year opening-game starters."""
 
 from statistics import median
 
@@ -15,7 +15,10 @@ STRIPE = "#F2F6F8"
 WIN = "#087D88"
 MISS = "#AD4C25"
 
-DETAIL_HEADERS = (("Slots", 0.12), ("ADP to finish", 0.40), ("Starts / GP", 0.68), ("FPTS vs ADP", 0.99))
+DETAIL_HEADERS = (
+    ("Slots", 0.09), ("ADP to FPPG rank", 0.385), ("Starts / GP", 0.61),
+    ("FPPG", 0.76), ("FPPG vs ADP", 0.99),
+)
 
 
 def signed_number(value):
@@ -29,11 +32,13 @@ def signed_number(value):
 def details(row):
     rank = row["next_rank"]
     starts = row["next_starts"]
+    fppg = row["next_fppg"]
     return (
         signed_number(row["adp_slots_gained"]),
         f"{row['adp']:g} to {rank if rank is not None else '—'}",
         f"{starts if starts is not None else '—'} / {row['next_games']}",
-        signed_number(row["fpts_above_adp"]),
+        f"{fppg:.3f}" if fppg is not None else "—",
+        signed_number(row["fppg_above_adp"]),
     )
 
 
@@ -45,7 +50,7 @@ def starter_page(title, rows, limit):
     FigureCanvasAgg(figure)
     figure.text(0.04, 1 - 0.30 / height, "Second-year players who started their team opener",
                 fontsize=17, fontweight="bold", color=TEXT, va="top")
-    subtitle = f"{title} · {count} {'player' if count == 1 else 'players'}"
+    subtitle = f"{title} · FPPG ranking · {count} {'player' if count == 1 else 'players'}"
     ranked = [row["adp_slots_gained"] for row in rows if row["adp_slots_gained"] is not None]
     if ranked:
         subtitle += f" · {signed_number(median(ranked))} median slots"
@@ -60,8 +65,8 @@ def starter_page(title, rows, limit):
     panel_height = row_height * count / height
     bottom = top - panel_height
     names = figure.add_axes([0.04, bottom, 0.239, panel_height])
-    chart = figure.add_axes([0.285, bottom, 0.355, panel_height])
-    table = figure.add_axes([0.659, bottom, 0.301, panel_height])
+    chart = figure.add_axes([0.285, bottom, 0.31, panel_height])
+    table = figure.add_axes([0.615, bottom, 0.345, panel_height])
     for axis in (names, chart, table):
         axis.set_ylim(count - 0.5, -0.5)
         axis.set_yticks([])
@@ -77,7 +82,7 @@ def starter_page(title, rows, limit):
 
     heading(names, 0, "Player", "left")
     heading(names, 0.98, "Draft", "right")
-    heading(chart, 0.5, "ADP slots gained", "center")
+    heading(chart, 0.5, "ADP slots gained by FPPG rank", "center")
     for label, x in DETAIL_HEADERS:
         heading(table, x, label, "right")
 
@@ -104,7 +109,7 @@ def starter_page(title, rows, limit):
             chart.scatter(0, index, color=MUTED, s=13, zorder=3)
 
     figure.text(0.04, bottom - 0.47 / height,
-                "Slots = average draft pick minus finish rank. FPTS vs ADP = points scored minus points at the ADP slot.",
+                "Slots = average draft pick minus FPPG rank. FPPG vs ADP = fantasy points per game minus FPPG at the ADP slot.",
                 fontsize=8.5, color=MUTED, va="top")
     return figure
 
@@ -120,6 +125,6 @@ def write_starter_plots(output, rows):
         ("Beat ADP", [row for row in ordered if row["beat_adp"]]),
         ("Tied or missed ADP", [row for row in ordered if not row["beat_adp"]]),
     )
-    with PdfPages(output, metadata={"Title": "Second-year opening-game starters vs ADP"}) as pdf:
+    with PdfPages(output, metadata={"Title": "Second-year opening-game starters vs ADP by FPPG rank"}) as pdf:
         for title, group in pages:
             pdf.savefig(starter_page(title, group, limit))
