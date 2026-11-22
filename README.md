@@ -132,6 +132,10 @@ The test also prints how many second-year players beat ADP by lineup role, rooki
 
 A regular starter started at least half of their second-year regular-season appearances. The test compares them with players who started fewer than half and reports players with no appearances or incomplete starter flags separately. Finish rank uses total fantasy points from all regular-season appearances. The player-level CSV includes `next_starts`, `next_start_pct`, and `next_lineup_role`.
 
+The `opening_lineup` rows compare all sophomores who started their NBA team's first regular-season game with the other sophomores. This includes opening starters who later lost their starting role. `opening_lineup_among_regular_starters` splits the season-long regular starters by the same opener status. Each row includes average ADP. Filter the player-level CSV by `second_year`, `next_lineup_role`, and `next_opener_role` to inspect the individual picks. The CSV records the team, game ID, and date for verified opener starts. A missing team lineup can leave a role `Unknown`.
+
+The opener is an observed lineup. For a strategy used before opening night, use starter projections dated before the fantasy draft to select players.
+
 The player-level CSV also includes `rookie_position` and `height_inches`. Position comes from the most frequent listing in the player's rookie regular-season box scores, with their ESPN profile as a fallback. Broad listings such as `G` and `F` are reported as given. Heights come from ESPN's listed profiles. Missing values appear in an `Unknown` group and count toward the overall rate. [ESPN player data archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_core)
 
 ## Player profiles with K-means and PCA

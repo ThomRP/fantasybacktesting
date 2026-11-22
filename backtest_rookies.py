@@ -3,14 +3,16 @@
 import math
 from collections import defaultdict
 from pathlib import Path
+from statistics import mean
 from tempfile import TemporaryDirectory
 
 from backtest_common import (
-    draft_outcomes, format_value_metrics, load_player_profiles, read_csv, report_results,
-    run_cli, season_pairs, value_metrics, write_csv,
+    draft_outcomes, format_value_metrics, load_player_profiles, name_key, player_lines, read_csv,
+    regular_season_game, report_results, run_cli, season_pairs, value_metrics, write_csv,
 )
 
 FIRST_ARCHIVE_YEAR = 1994  # ESPN season files are named by ending year.
+OPENER_ROLES = ("Started team opener", "Did not start team opener", "Unknown")
 
 
 def players_with_appearances(data, ending_year):
@@ -67,6 +69,53 @@ def add_rookie_profiles(data, ending_year, rows, prior_players):
         row["height_inches"] = listed_height(profile)
 
 
+def read_opening_lineups(folder):
+    games = sorted(
+        (row for row in read_csv(folder / "games.csv") if regular_season_game(row)),
+        key=lambda row: (row["game_date"], row["game_id"]),
+    )
+    openers = {}
+    for game in games:
+        for team_id in (game["home_id"], game["away_id"]):
+            openers.setdefault(team_id, game)
+
+    game_dates = {game["game_id"]: game["game_date"] for game in openers.values()}
+    lineups = defaultdict(lambda: defaultdict(set))
+    for game_id, athlete_id, name, _, _, starter, team_id in player_lines(folder, game_dates):
+        opener = openers.get(team_id)
+        if opener and game_id == opener["game_id"] and str(starter).strip().lower() == "true":
+            lineups[team_id][name_key(name)].add(athlete_id)
+
+    verified_teams = 0
+    starters = {}
+    for team_id, game in openers.items():
+        if len(lineups[team_id]) != 5:
+            continue
+        verified_teams += 1
+        for ids in lineups[team_id].values():
+            for athlete_id in ids:
+                starters.setdefault(athlete_id, (team_id, game["game_id"], game["game_date"]))
+    complete = bool(openers) and verified_teams == len(openers)
+    if not complete:
+        print(f"{folder.name}: verified {verified_teams}/{len(openers)} team opening lineups. Unconfirmed roles are unknown.")
+    return starters, complete
+
+
+def opener_details(athlete_id, starters, complete):
+    if athlete_id in starters:
+        team_id, game_id, game_date = starters[athlete_id]
+        role = "Started team opener"
+    else:
+        team_id = game_id = game_date = None
+        role = "Did not start team opener" if complete else "Unknown"
+    return {
+        "next_opener_role": role,
+        "next_opener_team_id": team_id,
+        "next_opener_game_id": game_id,
+        "next_opener_date": game_date,
+    }
+
+
 def hit_rate_row(breakdown, group, rows):
     hits = sum(row["beat_adp"] for row in rows)
     return {
@@ -75,6 +124,7 @@ def hit_rate_row(breakdown, group, rows):
         "players": len(rows),
         "beat_adp": hits,
         "beat_adp_pct": round(100 * hits / len(rows), 1) if rows else None,
+        "avg_adp": round(mean(row["adp"] for row in rows), 1) if rows else None,
         **value_metrics(rows),
     }
 
@@ -82,14 +132,23 @@ def hit_rate_row(breakdown, group, rows):
 def report_rookie_breakdown(output, results):
     rookies = [row for row in results if row["second_year"]]
     by_role = defaultdict(list)
+    by_opener = defaultdict(list)
+    regular_starters_by_opener = defaultdict(list)
     by_position = defaultdict(list)
     by_height = defaultdict(list)
     for row in rookies:
         by_role[row["next_lineup_role"]].append(row)
+        opener_role = row["next_opener_role"]
+        by_opener[opener_role].append(row)
+        if row["next_lineup_role"] == "Regular starter":
+            regular_starters_by_opener[opener_role].append(row)
         by_position[row["rookie_position"] or "Unknown"].append(row)
         by_height[row["height_inches"]].append(row)
 
     summary = [hit_rate_row("overall", "Second-year players", rookies)]
+    for breakdown, groups in (("opening_lineup", by_opener),
+                              ("opening_lineup_among_regular_starters", regular_starters_by_opener)):
+        summary.extend(hit_rate_row(breakdown, role, groups[role]) for role in OPENER_ROLES)
     for role in ("Regular starter", "Started fewer than half", "No games", "Unknown"):
         if by_role[role] or role == "Regular starter":
             summary.append(hit_rate_row("lineup_role", role, by_role[role]))
@@ -130,6 +189,7 @@ def run_backtest(data):
 
         _, prior_players = prior_stats
         _, following_players = following_stats
+        opener_starters, opener_lineups_complete = read_opening_lineups(following)
         rookies = prior_players.keys() - played_before
         played_before.update(prior_players)
         outcomes, total_picks = draft_outcomes(following, prior_players, following_players)
@@ -142,6 +202,7 @@ def run_backtest(data):
                 "prior_games": prior_players[athlete_id].total_games,
                 "second_year": athlete_id in rookies,
                 **outcome,
+                **opener_details(athlete_id, opener_starters, opener_lineups_complete),
                 "rookie_position": None,
                 "height_inches": None,
             }

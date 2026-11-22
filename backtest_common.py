@@ -88,6 +88,7 @@ def archived_lines(path):
     with path.open(encoding="utf-8") as source:
         game = json.load(source)
     for team in game["boxscore"].get("players", []):
+        team_id = str((team.get("team") or {}).get("id", ""))
         for group in team["statistics"]:
             for player in group["athletes"]:
                 stats = dict(zip(group["keys"], player["stats"]))
@@ -103,7 +104,7 @@ def archived_lines(path):
                 stats["three_point_field_goals_made"] = threes.split("-")[0]
                 athlete = player["athlete"]
                 position = (athlete.get("position") or {}).get("abbreviation")
-                yield str(athlete["id"]), athlete["displayName"], fantasy_points(stats), position, player.get("starter")
+                yield str(athlete["id"]), athlete["displayName"], fantasy_points(stats), position, player.get("starter"), team_id
 
 
 def player_lines(folder, game_dates):
@@ -115,15 +116,15 @@ def player_lines(folder, game_dates):
         covered_games.add(game_id)
         yield (
             game_id, row["athlete_id"], row["athlete_display_name"], fantasy_points(row),
-            row.get("athlete_position_abbreviation"), row.get("starter"),
+            row.get("athlete_position_abbreviation"), row.get("starter"), row.get("team_id"),
         )
 
     for game_id in sorted(game_dates.keys() - covered_games):
         path = folder / "game_json" / f"{game_id}.json"
         if path.is_file():
-            for athlete_id, name, points, position, starter in archived_lines(path):
+            for athlete_id, name, points, position, starter, team_id in archived_lines(path):
                 covered_games.add(game_id)
-                yield game_id, athlete_id, name, points, position, starter
+                yield game_id, athlete_id, name, points, position, starter, team_id
 
     missing = game_dates.keys() - covered_games
     if missing:
@@ -146,7 +147,7 @@ def read_season(folder, *, split_at_all_star=True):
 
     game_dates = {g["game_id"]: g["game_date"] for g in schedule if regular_season_game(g)}
     players = defaultdict(PlayerSeason)
-    for game_id, athlete_id, name, points, position, starter in player_lines(folder, game_dates):
+    for game_id, athlete_id, name, points, position, starter, _ in player_lines(folder, game_dates):
         player = players[athlete_id]
         player.names.add(name)
         if position:
