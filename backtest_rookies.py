@@ -6,7 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from backtest_common import (
-    draft_outcomes, load_player_profiles, read_csv, report_results, run_cli, season_pairs, write_csv,
+    draft_outcomes, format_value_metrics, load_player_profiles, read_csv, report_results,
+    run_cli, season_pairs, value_metrics, write_csv,
 )
 
 FIRST_ARCHIVE_YEAR = 1994  # ESPN season files are named by ending year.
@@ -88,6 +89,7 @@ def hit_rate_row(breakdown, group, rows):
         "players": len(rows),
         "beat_adp": hits,
         "beat_adp_pct": round(100 * hits / len(rows), 1) if rows else None,
+        **value_metrics(rows),
     }
 
 
@@ -118,7 +120,8 @@ def report_rookie_breakdown(output, results):
     for row in summary[1:]:
         label = f"{row['breakdown'].replace('_', ' ').title()} {row['group']}"
         if row["players"]:
-            print(f"{label}: {row['beat_adp']}/{row['players']} beat ADP ({row['beat_adp_pct']:.1f}%)")
+            print(f"{label}: {row['beat_adp']}/{row['players']} beat ADP ({row['beat_adp_pct']:.1f}%), "
+                  f"{format_value_metrics(row)}")
         else:
             print(f"{label}: no eligible player-seasons")
     print(f"Saved second-year breakdown to {output}")

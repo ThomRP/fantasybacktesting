@@ -10,7 +10,7 @@ from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 
-from backtest_common import draft_outcomes, load_birth_dates, season_pairs, write_csv
+from backtest_common import draft_outcomes, format_value_metrics, load_birth_dates, season_pairs, value_metrics, write_csv
 
 FEATURES = (
     "adp",
@@ -80,6 +80,7 @@ def summary_row(cluster, train_count, evaluated):
         "holdout_beat_adp": hits,
         "holdout_beat_adp_pct": round(100 * hits / count, 1) if count else None,
         "holdout_avg_adp": round(mean(row["adp"] for row in evaluated), 1) if count else None,
+        **value_metrics(evaluated),
     }
 
 
@@ -140,7 +141,7 @@ def run_backtest(data, clusters=4, holdout_seasons=2):
         count = row["holdout_players"]
         if count:
             print(f"{label}: {row['holdout_beat_adp']}/{count} beat ADP ({row['holdout_beat_adp_pct']:.1f}%), "
-                  f"average ADP {row['holdout_avg_adp']:.1f}")
+                  f"average ADP {row['holdout_avg_adp']:.1f}, {format_value_metrics(row)}")
         else:
             print(f"{label}: no holdout players")
 

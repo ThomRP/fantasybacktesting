@@ -158,6 +158,15 @@ The script learns four profiles from earlier drafts and checks their ADP hit rat
 - `data/backtest_cluster_results.csv` has the held-out player records, profile assignments, and actual finishes.
 - `data/backtest_cluster_pca.csv` shows which features contribute to the first two components and how much input variation each component explains. The held-out hit rates measure associations with beating ADP.
 
+## Draft value beyond hit rate
+
+The backtests report hit rate alongside two measures of how large the gains and losses were.
+
+- **Average ADP slots gained** is ADP minus finish rank, averaged over players with a rank. Positive means a better finish rank than ADP. The reports show the ranked sample size.
+- **Average FPTS above ADP** is actual regular-season fantasy points minus the points scored at the player's ADP slot on that season's league-wide leaderboard. Fractional ADPs interpolate between adjacent slots. The benchmark has a zero floor, and a player who missed the season scores zero actual points in this calculation.
+
+The player-level files show `adp_slot_fpts` and `fpts_above_adp` for each pick. The cluster and rookie summary CSVs include the averages, and the surge and decline tests print them by group. Compare each group's average with the corresponding overall or comparison group value in the same run.
+
 ## Files
 
 Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to choose a different root.

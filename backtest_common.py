@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from statistics import mean
 from tempfile import TemporaryDirectory
 
 SCORING = {
@@ -246,6 +247,17 @@ def read_adp(path):
                 yield name, adp
 
 
+def adp_slot_points(totals, adp):
+    """Interpolate points between adjacent leaderboard spots for a fractional ADP."""
+    index = max(adp - 1, 0)
+    if index >= len(totals):
+        return 0.0
+    place = int(index)
+    earlier = max(totals[place], 0)
+    later = max(totals[place + 1], 0) if place + 1 < len(totals) else 0
+    return earlier + (later - earlier) * (index - place)
+
+
 def draft_outcomes(following, prior_players, following_players, *, match_prior_only=False):
     # Match the draft to ESPN by name, then track the athlete by ESPN ID.
     athlete_ids = defaultdict(set)
@@ -276,14 +288,18 @@ def draft_outcomes(following, prior_players, following_players, *, match_prior_o
         matched.add(athlete_id)
 
         after = following_players.get(athlete_id)
-        rank = rank_by_total[after.total_points] if after else None
+        actual_points = after.total_points if after else 0
+        pick_points = adp_slot_points(totals, adp)
+        rank = rank_by_total[actual_points] if after else None
         outcomes.append((name, athlete_id, {
             "adp": adp,
             "next_games": after.total_games if after else 0,
-            "next_total_fpts": after.total_points if after else 0,
+            "next_total_fpts": actual_points,
             "next_rank": rank,
             "adp_slots_gained": round(adp - rank, 3) if rank is not None else None,
             "beat_adp": rank is not None and rank < adp,
+            "adp_slot_fpts": round(pick_points, 3),
+            "fpts_above_adp": round(actual_points - pick_points, 3),
         }))
     return outcomes, len(picks)
 
@@ -361,6 +377,22 @@ def write_csv(output, rows):
         writer.writerows(rows)
 
 
+def value_metrics(rows):
+    slots = [row["adp_slots_gained"] for row in rows if row["adp_slots_gained"] is not None]
+    return {
+        "ranked_players": len(slots),
+        "avg_adp_slots_gained_ranked": round(mean(slots), 1) if slots else None,
+        "avg_fpts_above_adp": round(mean(row["fpts_above_adp"] for row in rows), 1) if rows else None,
+    }
+
+
+def format_value_metrics(metrics):
+    result = f"{metrics['avg_fpts_above_adp']:+.1f} avg FPTS vs ADP"
+    if metrics["ranked_players"]:
+        result += f", {metrics['avg_adp_slots_gained_ranked']:+.1f} avg slots ({metrics['ranked_players']} ranked)"
+    return result
+
+
 def report_results(output, results, cohort_column, label, other_label="Other eligible players"):
     if not results:
         raise ValueError("no eligible player-seasons found. Use consecutive downloaded seasons with ADP in the later season")
@@ -370,7 +402,8 @@ def report_results(output, results, cohort_column, label, other_label="Other eli
         group = [row for row in results if row[cohort_column] == matched]
         hits = sum(row["beat_adp"] for row in group)
         if group:
-            print(f"{group_label}: {hits}/{len(group)} beat ADP ({hits / len(group):.1%})")
+            print(f"{group_label}: {hits}/{len(group)} beat ADP ({hits / len(group):.1%}), "
+                  f"{format_value_metrics(value_metrics(group))}")
         else:
             print(f"{group_label}: no eligible player-seasons")
     print(f"Saved {len(results)} player-seasons to {output}")
