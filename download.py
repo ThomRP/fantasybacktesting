@@ -13,6 +13,8 @@ from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
 
+from adp_names import clean_adp_player_name
+
 FANTASYPROS = "https://www.fantasypros.com/nba/adp/overall.php"
 ESPN_ARCHIVE = "https://github.com/sportsdataverse/sportsdataverse-data/releases/download"
 ESPN_RAW = "https://raw.githubusercontent.com/sportsdataverse/hoopR-nba-raw/main/nba/json/final"
@@ -61,7 +63,7 @@ def parse_adp(html, year):
             if len(values) != len(headers) or not values[rank].isdigit() or not values[player]:
                 continue
             link = cells[player].select_one('a[href*="/nba/players/"]')
-            name = link.get_text(" ", strip=True) if link else values[player]
+            name = clean_adp_player_name(link.get_text(" ", strip=True) if link else values[player])
             player_url = urljoin(FANTASYPROS, link["href"]) if link else ""
             records.append([year, name, player_url, *values])
         if any(re.fullmatch(r"\d+(?:\.\d+)?", record[average + 3]) for record in records):

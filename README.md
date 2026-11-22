@@ -223,7 +223,7 @@ Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to
 | `play_by_play.csv` | Optional game events |
 | `game_json/<game_id>.json` | Original ESPN game records fetched when a requested CSV is missing a completed game |
 
-Join the ESPN files on `game_id`. ESPN identifies players by `athlete_id`. The backtest matches FantasyPros players to unique ESPN IDs using normalized player names.
+Join the ESPN files on `game_id`. ESPN identifies players by `athlete_id`. The backtests match FantasyPros players to unique ESPN IDs using normalized player names. The CSV reader strips FantasyPros team and position tags and trailing statuses from older downloads. The clustering and model backtests require a match to a player who appeared the prior regular season.
 
 The downloader prints how many completed games each CSV covers. If a requested feed is absent from both the CSV and the original game record, it reports the gap and exits with a nonzero status. Regular season, postseason, and any other game types present in the source stay in the files. Filter ESPN `season_type` to `2` for regular-season scoring.
 

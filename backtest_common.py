@@ -14,6 +14,8 @@ from pathlib import Path
 from statistics import mean, median
 from tempfile import TemporaryDirectory
 
+from adp_names import clean_adp_player_name
+
 SCORING = {
     "field_goals_made": 2,
     "field_goals_attempted": -1,
@@ -239,7 +241,7 @@ def read_adp(path):
         if average is None or "playername" not in columns:
             raise ValueError(f"{path}: expected player_name and an average ADP column")
         for row in rows:
-            name = row[columns["playername"]]
+            name = clean_adp_player_name(row[columns["playername"]] or "")
             try:
                 adp = float(row[average])
             except (TypeError, ValueError):
