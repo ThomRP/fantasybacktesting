@@ -197,6 +197,28 @@ Logistic regression tests stronger regularization and quadratic terms with pairw
 - `data/backtest_model_cv.csv` shows out-of-sample results and chosen parameters for each earlier evaluation draft, including the dates used for its fit and tuning.
 - `data/backtest_model_parameter_search.csv` shows the mean and standard deviation of average precision for every candidate parameter set considered before the final holdout.
 
+## Finding FPPG value at the same draft price
+
+`backtest_value.py` tests two changes independently. It adds prior-season minutes, changes in minutes and start rate after the All-Star break, and fantasy scoring and shot attempts per 36 minutes. It also compares the regularized quadratic logistic model with ridge regression that predicts the actual FPPG margin above ADP. Each model runs with both feature sets, using fixed settings and chronological splits.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_value.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_value.py
+```
+
+Each model selects the top 25% per evaluation draft by default. Use `--top-pct` to set the selection size and `--min-adp` or `--max-adp` to restrict the eligible draft range. These ADP filters apply to selection and evaluation. For example, `--max-adp 156` tests only the first 156 draft slots. `--cv-folds` and `--holdout-seasons` set the number of earlier evaluation folds and final holdout drafts.
+
+- `data/backtest_value_summary.csv` compares final holdout hit rates and FPPG margins with the full eligible pool and with a benchmark that matches the model's pick counts by season and 25-slot ADP band.
+- `data/backtest_value_cv.csv` shows the same metrics for each earlier chronological fold.
+- `data/backtest_value_results.csv` lists holdout features, scores, selection flags, and outcomes. Logistic scores rank players by hit probability and value scores rank players by predicted FPPG margin.
+
 ## Draft value beyond hit rate
 
 The backtests report hit rate alongside two measures of how large the gains and losses were.

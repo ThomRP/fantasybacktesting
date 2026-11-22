@@ -24,7 +24,7 @@ FEATURES = (
 )
 
 
-def draft_rows(data):
+def draft_rows(data, *, extra_prior_features=None):
     for year, prior, following, prior_stats, following_stats in season_pairs(data):
         all_star_date, prior_players = prior_stats
         _, following_players = following_stats
@@ -35,6 +35,7 @@ def draft_rows(data):
         if not outcomes:
             continue
 
+        extra = extra_prior_features(prior, all_star_date=all_star_date) if extra_prior_features else {}
         try:
             births = load_birth_dates(data, year + 1)
         except (OSError, ValueError, KeyError) as error:
@@ -66,6 +67,7 @@ def draft_rows(data):
                 "prior_fppg": player.total_points / player.total_games,
                 "prior_post_break_fppg_change": fppg_change,
                 "prior_start_pct": start_pct,
+                **extra.get(athlete_id, {}),
                 **outcome,
             }
 
