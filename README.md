@@ -54,6 +54,26 @@ The positional year is the **start of the NBA season**. Add a second starting ye
 
 Each season needs a populated ADP table before the downloader requests its game files. Use `--games-only` to skip the ADP lookup. Add `--play-by-play` for event-level data, which can add several hundred MB per season. The downloader reports failures by season and exits with a nonzero status if any season fails.
 
+## All-Star break backtest
+
+Run the backtest from the repository root after downloading consecutive completed seasons. If you downloaded to a different folder, pass its path with `--data`.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest.py
+```
+
+The script applies the league scoring in `backtest.py` to each regular-season game played. A player qualifies for the test with at least one game on each side of the All-Star break and positive pre-break fantasy points per game. A rise of 10% or more flags a surge.
+
+In the following season, players beat ADP if their rank by total regular-season fantasy points is better than their average draft pick. A matched player who misses the entire season counts as a miss. The script prints how many ADP entries it matches to unique ESPN players and compares hit rates for surging players and other eligible players. Find the individual results in `data/backtest_results.csv`.
+
 ## Files
 
 Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to choose a different root.
@@ -67,7 +87,7 @@ Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to
 | `play_by_play.csv` | Optional game events |
 | `game_json/<game_id>.json` | Original ESPN game records fetched when a requested CSV is missing a completed game |
 
-Join the ESPN files on `game_id`. ESPN identifies players by `athlete_id`. The ADP file uses FantasyPros player names and URLs, so a future backtest will need a crosswalk between the two sources.
+Join the ESPN files on `game_id`. ESPN identifies players by `athlete_id`. The backtest matches FantasyPros players to unique ESPN IDs using normalized player names.
 
 The downloader prints how many completed games each CSV covers. If a requested feed is absent from both the CSV and the original game record, it reports the gap and exits with a nonzero status. Regular season, postseason, and any other game types present in the source stay in the files. Filter ESPN `season_type` to `2` for regular-season scoring.
 
