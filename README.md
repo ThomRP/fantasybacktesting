@@ -174,7 +174,7 @@ The script learns four profiles from earlier drafts and checks their ADP hit rat
 
 ## Predicting who beats ADP
 
-`backtest_models.py` compares an ADP-only logistic model, logistic regression using all six pre-draft features, and shallow gradient-boosted trees. It tunes regularization or tree depth and leaf size on earlier draft-season splits. The latest two drafts are held out for evaluation by default.
+`backtest_models.py` compares an ADP-only logistic model, logistic regression using all six pre-draft features, and shallow gradient-boosted trees. It uses expanding draft-season folds. Each fold tunes on earlier drafts by average precision, then tests on the next draft. The latest two drafts are held out from this process for final evaluation by default.
 
 **Windows (PowerShell)**
 
@@ -188,10 +188,14 @@ The script learns four profiles from earlier drafts and checks their ADP hit rat
 .venv/bin/python backtest_models.py
 ```
 
-Each model selects its top 25% of available picks in each holdout draft. Use `--top-pct` to choose how selective the rule is and `--holdout-seasons` to set the evaluation window. Players with zero appearances can still be selected and appear in the unranked count. Hit rates and average FPPG margins use ranked players.
+Each model selects its top 25% of available picks in each evaluation draft. Use `--top-pct` to choose how selective the rule is, `--holdout-seasons` to set the final evaluation window, and `--cv-folds` to set the maximum number of chronological folds for both evaluation and tuning (default five). Players with zero appearances can still be selected and appear in the unranked count. Hit rates and average FPPG margins use ranked players.
+
+Logistic regression tests stronger regularization and quadratic terms with pairwise feature interactions. Boosted trees test depth, minimum leaf size, and L2 regularization. Compare whether the models improve on ADP-only across individual folds and in the final holdout.
 
 - `data/backtest_model_summary.csv` compares selected picks with the overall holdout rate and the equally selective ADP-only rule. It also has FPPG margins, whole-holdout average precision and ROC AUC, and the selected validation parameters.
 - `data/backtest_model_results.csv` lists each holdout pick's model scores, selection flags, and FPPG outcome.
+- `data/backtest_model_cv.csv` shows out-of-sample results and chosen parameters for each earlier evaluation draft, including the dates used for its fit and tuning.
+- `data/backtest_model_parameter_search.csv` shows the mean and standard deviation of average precision for every candidate parameter set considered before the final holdout.
 
 ## Draft value beyond hit rate
 

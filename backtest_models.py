@@ -12,13 +12,13 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from backtest_clusters import FEATURES, draft_rows, feature_matrix
 from backtest_common import adp_hit_counts, value_metrics, write_csv
 
 
-def validation_splits(training):
+def validation_splits(training, fold_limit):
     """Validate on a whole draft season using only earlier drafts for each fit."""
     years = sorted({row["draft_season"] for row in training})
     splits = []
@@ -27,26 +27,37 @@ def validation_splits(training):
         validate = [i for i, row in enumerate(training) if row["draft_season"] == year]
         if len({training[i]["beat_adp"] for i in train}) == len({training[i]["beat_adp"] for i in validate}) == 2:
             splits.append((train, validate))
-    return splits[-3:]
+    return splits[-fold_limit:]
 
 
 def model_specs():
-    def logistic():
-        return make_pipeline(
-            SimpleImputer(strategy="median", keep_empty_features=True), StandardScaler(), LogisticRegression(max_iter=1000),
-        )
+    adp_only = make_pipeline(
+        SimpleImputer(strategy="median", keep_empty_features=True), StandardScaler(), LogisticRegression(max_iter=1000),
+    )
+    logistic = make_pipeline(
+        SimpleImputer(strategy="median", keep_empty_features=True),
+        PolynomialFeatures(degree=1, include_bias=False),
+        StandardScaler(),
+        LogisticRegression(max_iter=1000),
+    )
+    trees = make_pipeline(
+        SimpleImputer(strategy="median", keep_empty_features=True),
+        HistGradientBoostingClassifier(
+            max_iter=120, learning_rate=0.05, max_depth=2, early_stopping=False, random_state=42,
+        ),
+    )
 
     return (
-        ("adp_only", ("adp",), logistic(), {"logisticregression__C": [0.1, 1.0, 10.0]}),
-        ("logistic", FEATURES, logistic(), {"logisticregression__C": [0.1, 1.0, 10.0]}),
-        (
-            "boosted_trees", FEATURES,
-            make_pipeline(SimpleImputer(strategy="median", keep_empty_features=True), HistGradientBoostingClassifier(
-                max_iter=120, learning_rate=0.05, max_depth=2, early_stopping=False, random_state=42,
-            )),
-            {"histgradientboostingclassifier__max_depth": [2, 3],
-             "histgradientboostingclassifier__min_samples_leaf": [20, 40]},
-        ),
+        ("adp_only", ("adp",), adp_only, {"logisticregression__C": [0.1, 1.0, 10.0]}),
+        ("logistic", FEATURES, logistic, {
+            "logisticregression__C": [0.03, 0.1, 1.0, 10.0],
+            "polynomialfeatures__degree": [1, 2],
+        }),
+        ("boosted_trees", FEATURES, trees, {
+            "histgradientboostingclassifier__max_depth": [2, 3],
+            "histgradientboostingclassifier__min_samples_leaf": [20, 40],
+            "histgradientboostingclassifier__l2_regularization": [0.0, 1.0],
+        }),
     )
 
 
@@ -80,23 +91,18 @@ def summary_row(name, selected, baseline, *, targets=(), probabilities=(), param
     }
 
 
-def run_backtest(data, holdout_seasons=2, top_pct=25):
-    rows = list(draft_rows(data))
-    seasons = sorted({row["draft_season"] for row in rows})
-    if len(seasons) <= holdout_seasons:
-        raise ValueError("need more completed draft seasons than --holdout-seasons")
-    train_years, test_years = seasons[:-holdout_seasons], seasons[-holdout_seasons:]
-    training = [row for row in rows if row["draft_season"] in train_years and row["beat_adp"] is not None]
-    evaluated = [row for row in rows if row["draft_season"] in test_years]
+def evaluate_split(training, evaluated, top_pct, fold_limit, *, include_grid=False):
     targets = [row["beat_adp"] for row in training]
     if len(set(targets)) < 2:
         raise ValueError("training drafts need at least one ranked hit and one ranked miss")
 
-    splits = validation_splits(training)
+    splits = validation_splits(training, fold_limit)
+    tuning_drafts = [training[validation[0]]["draft_season"] for _, validation in splits]
     ranked_indices = [i for i, row in enumerate(evaluated) if row["beat_adp"] is not None]
     holdout_targets = [evaluated[i]["beat_adp"] for i in ranked_indices]
     baseline = 100 * sum(holdout_targets) / len(holdout_targets) if holdout_targets else None
     summary = [summary_row("overall_holdout", evaluated, baseline)]
+    grid_report = []
 
     for name, features, model, grid in model_specs():
         matrix = feature_matrix(training, features)
@@ -105,6 +111,17 @@ def run_backtest(data, holdout_seasons=2, top_pct=25):
             search = GridSearchCV(model, grid, cv=splits, scoring="average_precision", error_score="raise")
             search.fit(matrix, targets)
             model, params = search.best_estimator_, search.best_params_
+            if include_grid:
+                results = search.cv_results_
+                grid_report.extend({
+                    "model": name,
+                    "parameters": json.dumps(candidate, sort_keys=True),
+                    "mean_validation_ap": round(float(results["mean_test_score"][index]), 6),
+                    "std_validation_ap": round(float(results["std_test_score"][index]), 6),
+                    "ap_rank_within_model": int(results["rank_test_score"][index]),
+                    "selected": index == search.best_index_,
+                    "validation_drafts": ", ".join(tuning_drafts),
+                } for index, candidate in enumerate(results["params"]))
         else:
             model.fit(matrix, targets)
         probabilities = model.predict_proba(feature_matrix(evaluated, features))[:, 1]
@@ -117,13 +134,57 @@ def run_backtest(data, holdout_seasons=2, top_pct=25):
             row[f"{name}_score"] = round(float(probability), 6)
             row[f"{name}_selected"] = i in selected
 
+    return summary, grid_report, tuning_drafts
+
+
+def cross_validate(training, development, top_pct, fold_limit):
+    folds = []
+    for year in sorted(development)[1:][-fold_limit:]:
+        earlier = [row for row in training if row["draft_season"] < year]
+        if len({row["beat_adp"] for row in earlier}) < 2:
+            print(f"Skipping CV for {year}: earlier drafts need both ranked hits and misses")
+            continue
+        print(f"Cross-validation: evaluating {year} with earlier drafts", flush=True)
+        evaluated = [row.copy() for row in development[year]]
+        summary, _, tuning_drafts = evaluate_split(earlier, evaluated, top_pct, fold_limit)
+        folds.extend({
+            "evaluation_draft": year,
+            "training_through": max(row["draft_season"] for row in earlier),
+            "training_ranked": len(earlier),
+            "tuning_drafts": ", ".join(tuning_drafts),
+            **row,
+        } for row in summary)
+    return folds
+
+
+def run_backtest(data, holdout_seasons=2, top_pct=25, cv_folds=5):
+    rows = list(draft_rows(data))
+    seasons = sorted({row["draft_season"] for row in rows})
+    if len(seasons) <= holdout_seasons:
+        raise ValueError("need more completed draft seasons than --holdout-seasons")
+    train_years, test_years = seasons[:-holdout_seasons], seasons[-holdout_seasons:]
+    development = {year: [row for row in rows if row["draft_season"] == year] for year in train_years}
+    training = [row for row in rows if row["draft_season"] in development and row["beat_adp"] is not None]
+    evaluated = [row for row in rows if row["draft_season"] in test_years]
+
+    cv = cross_validate(training, development, top_pct, cv_folds)
+    print(f"Final holdout: evaluating {', '.join(test_years)}", flush=True)
+    summary, grid_report, tuning_drafts = evaluate_split(training, evaluated, top_pct, cv_folds, include_grid=True)
     write_csv(data / "backtest_model_summary.csv", summary)
     write_csv(data / "backtest_model_results.csv", evaluated)
+    write_csv(data / "backtest_model_cv.csv", cv, fieldnames=[
+        "evaluation_draft", "training_through", "training_ranked", "tuning_drafts", *summary[0],
+    ])
+    write_csv(data / "backtest_model_parameter_search.csv", grid_report, fieldnames=[
+        "model", "parameters", "mean_validation_ap", "std_validation_ap", "ap_rank_within_model", "selected",
+        "validation_drafts",
+    ])
+
+    print(f"Completed {len({row['evaluation_draft'] for row in cv})} out-of-sample development folds")
     print(f"Training drafts: {', '.join(train_years)}")
     print(f"Holdout drafts: {', '.join(test_years)}")
-    if splits:
-        validation_years = [training[validation[0]]["draft_season"] for _, validation in splits]
-        print(f"Parameter validation drafts: {', '.join(validation_years)}")
+    if tuning_drafts:
+        print(f"Parameter validation drafts: {', '.join(tuning_drafts)}")
     else:
         print("Using default parameters because no earlier validation splits had both outcome classes")
     print(f"Each model selects the top {top_pct:g}% of each holdout draft by predicted score")
@@ -141,11 +202,12 @@ def main():
     parser.add_argument("--data", type=Path, default=Path("data"), help="download folder (default: data)")
     parser.add_argument("--holdout-seasons", type=int, default=2, help="latest draft seasons to evaluate (default: 2)")
     parser.add_argument("--top-pct", type=float, default=25, help="percentage selected from each holdout draft (default: 25)")
+    parser.add_argument("--cv-folds", type=int, default=5, help="maximum chronological folds for validation and tuning (default: 5)")
     args = parser.parse_args()
-    if args.holdout_seasons < 1 or not 0 < args.top_pct <= 100:
-        parser.error("use at least one holdout season and a selection percentage greater than 0 and at most 100")
+    if args.holdout_seasons < 1 or args.cv_folds < 1 or not 0 < args.top_pct <= 100:
+        parser.error("use at least one holdout season and CV fold, and a selection percentage greater than 0 and at most 100")
     try:
-        run_backtest(args.data, args.holdout_seasons, args.top_pct)
+        run_backtest(args.data, args.holdout_seasons, args.top_pct, args.cv_folds)
     except (OSError, ValueError, KeyError, csv.Error) as error:
         parser.exit(1, f"Backtest failed: {error}\n")
 
