@@ -219,6 +219,26 @@ Each model selects the top 25% per evaluation draft by default. Use `--top-pct` 
 - `data/backtest_value_cv.csv` shows the same metrics for each earlier chronological fold.
 - `data/backtest_value_results.csv` lists holdout features, scores, selection flags, and outcomes. Logistic scores rank players by hit probability and value scores rank players by predicted FPPG margin.
 
+### Audit picks that finished 50th–150th
+
+This retrospective audit keeps each model's saved selection flags and evaluates the players who finished 50th–150th by league-wide FPPG rank, inclusive. ADP 110 and finish rank 90 is a 20-slot win. Run it after generating `data/backtest_value_results.csv`.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_rank_band.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_rank_band.py
+```
+
+The script saves `data/backtest_value_rank_band_summary.csv` and `data/backtest_value_rank_band_picks.csv`. The summary shows original selection counts, retained picks, hit rates, and same-price comparisons within the finish band, split by draft season and 25-slot ADP bands. The `adp_in_finish_band` rows require ADP above 50 and at most 150. The other picks have outcomes determined by the finish filter alone, with automatic misses at ADP 50 or earlier and automatic wins after ADP 150.
+
+Use `--results data/backtest_model_results.csv` to audit the supervised model run and `--min-rank` / `--max-rank` to change the finish range. To test a rule available at draft time, use `backtest_value.py --min-adp 50 --max-adp 150` and evaluate every finish.
+
 ## Draft value beyond hit rate
 
 The backtests report hit rate alongside two measures of how large the gains and losses were.
