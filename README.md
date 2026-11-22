@@ -110,6 +110,24 @@ This backtest compares next-season ADP hit rates for players whose fantasy point
 
 Results go to `data/backtest_decline_results.csv`. Add `--ages 23 29` to either command for the age-restricted run, which saves to `data/backtest_decline_results_ages_23_29.csv`.
 
+## Second-year players
+
+The rookie season is the first season a player appeared in a regular-season NBA game. The test compares their ADP in the immediately following season with their finish by total regular-season fantasy points. It prints hit rates for second-year players and other drafted players who played the prior season. A matched player who misses the entire next season counts as a miss.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_rookies.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_rookies.py
+```
+
+Results go to `data/backtest_rookie_results.csv`. The `second_year` column identifies players in the rookie cohort. On the first run, the script fetches ESPN regular-season appearance history back to 1993–94 and caches player IDs in `data/player_history/`. [ESPN season statistics archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_season_stats)
+
 ## Files
 
 Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to choose a different root.

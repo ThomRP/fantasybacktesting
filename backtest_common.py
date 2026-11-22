@@ -50,6 +50,10 @@ class PlayerSeason:
     def total_points(self):
         return self.pre_points + self.post_points
 
+    @property
+    def total_games(self):
+        return self.pre_games + self.post_games
+
 
 def fantasy_points(stats):
     return sum(int(stats[column]) * weight for column, weight in SCORING.items())
@@ -118,24 +122,26 @@ def player_lines(folder, game_dates):
         print(f"{folder.name}: missing player box scores for regular-season games {', '.join(sorted(missing))}")
 
 
-def read_season(folder):
+def read_season(folder, *, split_at_all_star=True):
     schedule = list(read_csv(folder / "games.csv"))
     if not any(g["season_type"] == "3" and g["status_type_completed"].lower() == "true" for g in schedule):
         print(f"Skipping {folder.name}: the schedule has no completed playoff game to confirm the regular season ended")
         return None
-    all_star_date = max(
-        (g["game_date"] for g in schedule if g["notes_headline"].lower().startswith("nba all-star")),
-        default=None,
-    )
-    if all_star_date is None:
-        raise ValueError(f"{folder.name}: no All-Star date found in games.csv")
+    all_star_date = None
+    if split_at_all_star:
+        all_star_date = max(
+            (g["game_date"] for g in schedule if g["notes_headline"].lower().startswith("nba all-star")),
+            default=None,
+        )
+        if all_star_date is None:
+            raise ValueError(f"{folder.name}: no All-Star date found in games.csv")
 
     game_dates = {g["game_id"]: g["game_date"] for g in schedule if regular_season_game(g)}
     players = defaultdict(PlayerSeason)
     for game_id, athlete_id, name, points in player_lines(folder, game_dates):
         player = players[athlete_id]
         player.names.add(name)
-        if game_dates[game_id] > all_star_date:
+        if all_star_date is not None and game_dates[game_id] > all_star_date:
             player.post_games += 1
             player.post_points += points
         else:
@@ -143,7 +149,7 @@ def read_season(folder):
             player.pre_points += points
     if not players:
         raise ValueError(f"{folder.name}: no usable regular-season player box scores")
-    return date.fromisoformat(all_star_date), players
+    return (date.fromisoformat(all_star_date) if all_star_date else None), players
 
 
 def read_birth_dates(path):
@@ -219,7 +225,7 @@ def read_adp(path):
                 yield name, adp
 
 
-def compare_seasons(prior, following, prior_players, following_players, backtest):
+def draft_outcomes(following, prior_players, following_players):
     # Match the draft to ESPN by name, then track the athlete by ESPN ID.
     athlete_ids = defaultdict(set)
     for players in (prior_players, following_players):
@@ -237,7 +243,7 @@ def compare_seasons(prior, following, prior_players, following_players, backtest
     if not picks:
         raise ValueError(f"{following.name}: no numeric average ADP values")
     matched = set()
-    results = []
+    outcomes = []
     for name, adp in picks:
         ids = athlete_ids[name_key(name)]
         if len(ids) != 1:
@@ -247,6 +253,23 @@ def compare_seasons(prior, following, prior_players, following_players, backtest
             continue
         matched.add(athlete_id)
 
+        after = following_players.get(athlete_id)
+        rank = rank_by_total[after.total_points] if after else None
+        outcomes.append((name, athlete_id, {
+            "adp": adp,
+            "next_games": after.total_games if after else 0,
+            "next_total_fpts": after.total_points if after else 0,
+            "next_rank": rank,
+            "adp_slots_gained": round(adp - rank, 3) if rank is not None else None,
+            "beat_adp": rank is not None and rank < adp,
+        }))
+    return outcomes, len(picks)
+
+
+def compare_seasons(prior, following, prior_players, following_players, backtest):
+    outcomes, total_picks = draft_outcomes(following, prior_players, following_players)
+    results = []
+    for name, athlete_id, outcome in outcomes:
         player = prior_players.get(athlete_id)
         if player is None or not player.pre_games or not player.post_games or player.pre_points <= 0:
             continue
@@ -256,8 +279,6 @@ def compare_seasons(prior, following, prior_players, following_players, backtest
         baseline = player.pre_points * player.post_games
         growth = (player.post_points * player.pre_games - baseline) / baseline
 
-        after = following_players.get(athlete_id)
-        rank = rank_by_total[after.total_points] if after else None
         results.append({
             "signal_season": prior.name,
             "draft_season": following.name,
@@ -269,23 +290,17 @@ def compare_seasons(prior, following, prior_players, following_players, backtest
             "post_fppg": round(post_fppg, 3),
             "fppg_change_pct": round(100 * growth, 3),
             backtest.column: backtest.matches(growth),
-            "adp": adp,
-            "next_games": after.pre_games + after.post_games if after else 0,
-            "next_total_fpts": after.total_points if after else 0,
-            "next_rank": rank,
-            "adp_slots_gained": round(adp - rank, 3) if rank is not None else None,
-            "beat_adp": rank is not None and rank < adp,
+            **outcome,
         })
 
-    print(f"{prior.name} to {following.name}: matched {len(matched)}/{len(picks)} ADP entries to unique players, "
+    print(f"{prior.name} to {following.name}: matched {len(outcomes)}/{total_picks} ADP entries to unique players, "
           f"{len(results)} with eligible splits")
     return results
 
 
-def run_backtest(data, backtest, ages=None):
+def season_pairs(data, *, split_at_all_star=True):
     seasons = {int(p.name[:4]): p for p in data.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}", p.name)}
     stats = {}
-    results = []
     for year, prior in sorted(seasons.items()):
         following = seasons.get(year + 1)
         if following is None:
@@ -295,46 +310,61 @@ def run_backtest(data, backtest, ages=None):
             continue
         for folder in (prior, following):
             if folder not in stats:
-                stats[folder] = read_season(folder)
+                stats[folder] = read_season(folder, split_at_all_star=split_at_all_star)
         if stats[prior] is None or stats[following] is None:
             continue
-        all_star_date, prior_players = stats[prior]
-        _, following_players = stats[following]
+        yield year, prior, following, stats[prior], stats[following]
+
+
+def run_backtest(data, backtest, ages=None):
+    results = []
+    for year, prior, following, prior_stats, following_stats in season_pairs(data):
+        all_star_date, prior_players = prior_stats
+        _, following_players = following_stats
         season_results = compare_seasons(prior, following, prior_players, following_players, backtest)
         if ages is not None and season_results:
             birth_dates = load_birth_dates(data, year + 1)
             season_results = filter_by_age(season_results, birth_dates, all_star_date, ages)
         results.extend(season_results)
 
+    suffix = f"_ages_{ages[0]}_{ages[1]}" if ages is not None else ""
+    output = data / f"{backtest.output_stem}{suffix}.csv"
+    report_results(output, results, backtest.column, backtest.label)
+
+
+def report_results(output, results, cohort_column, label, other_label="Other eligible players"):
     if not results:
         raise ValueError("no eligible player-seasons found. Use consecutive downloaded seasons with ADP in the later season")
 
-    suffix = f"_ages_{ages[0]}_{ages[1]}" if ages is not None else ""
-    output = data / f"{backtest.output_stem}{suffix}.csv"
     with output.open("w", encoding="utf-8-sig", newline="") as destination:
         writer = csv.DictWriter(destination, fieldnames=list(results[0]))
         writer.writeheader()
         writer.writerows(results)
 
-    for label, matched in ((backtest.label, True), ("Other eligible players", False)):
-        group = [row for row in results if row[backtest.column] == matched]
+    for group_label, matched in ((label, True), (other_label, False)):
+        group = [row for row in results if row[cohort_column] == matched]
         hits = sum(row["beat_adp"] for row in group)
         if group:
-            print(f"{label}: {hits}/{len(group)} beat ADP ({hits / len(group):.1%})")
+            print(f"{group_label}: {hits}/{len(group)} beat ADP ({hits / len(group):.1%})")
         else:
-            print(f"{label}: no eligible player-seasons")
+            print(f"{group_label}: no eligible player-seasons")
     print(f"Saved {len(results)} player-seasons to {output}")
 
 
-def run_cli(description, run):
+def run_cli(description, run, *, allow_ages=True):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--data", type=Path, default=Path("data"), help="download folder (default: data)")
-    parser.add_argument("--ages", nargs=2, type=int, metavar=("MIN", "MAX"),
-                        help="inclusive age range at the signal season's All-Star break")
+    if allow_ages:
+        parser.add_argument("--ages", nargs=2, type=int, metavar=("MIN", "MAX"),
+                            help="inclusive age range at the signal season's All-Star break")
     args = parser.parse_args()
-    if args.ages is not None and not 0 <= args.ages[0] <= args.ages[1]:
+    ages = getattr(args, "ages", None)
+    if ages is not None and not 0 <= ages[0] <= ages[1]:
         parser.error("--ages requires a nonnegative minimum and a maximum at least as large")
     try:
-        run(args.data, args.ages)
+        if allow_ages:
+            run(args.data, ages)
+        else:
+            run(args.data)
     except (OSError, ValueError, KeyError, csv.Error) as error:
         parser.exit(1, f"Backtest failed: {error}\n")
