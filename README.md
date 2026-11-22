@@ -237,7 +237,27 @@ This retrospective audit keeps each model's saved selection flags and evaluates 
 
 The script saves `data/backtest_value_rank_band_summary.csv` and `data/backtest_value_rank_band_picks.csv`. The summary shows original selection counts, retained picks, hit rates, and same-price comparisons within the finish band, split by draft season and 25-slot ADP bands. The `adp_in_finish_band` rows require ADP above 50 and at most 150. The other picks have outcomes determined by the finish filter alone, with automatic misses at ADP 50 or earlier and automatic wins after ADP 150.
 
-Use `--results data/backtest_model_results.csv` to audit the supervised model run and `--min-rank` / `--max-rank` to change the finish range. To test a rule available at draft time, use `backtest_value.py --min-adp 50 --max-adp 150` and evaluate every finish.
+Use `--results data/backtest_model_results.csv` to audit the supervised model run and `--min-rank` / `--max-rank` to change the finish range.
+
+### Compare models within draft-day ADP bands
+
+Run `backtest_adp_bands.py` after generating `data/backtest_value_results.csv` with the default unrestricted ADP range. It sorts candidates by their saved model scores within each draft and ADP band. Each model takes the same number of picks, defaulting to the top 25% rounded up. Every selection stays in the report. Players without a finish rank count as unranked and are excluded from the FPPG and hit-rate averages.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_adp_bands.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_adp_bands.py
+```
+
+The default bands have upper ADP limits of 25, 50, 75, 100, 125, and 150, with a final band above 150. Each boundary belongs to the lower band. Try `--band-ends 24 48 72 96 120 144` to group pairs of rounds in a 12-team league. Use `--top-pct 10` to test a shorter target list.
+
+The script writes `data/backtest_value_adp_band_summary.csv` and `data/backtest_value_adp_band_picks.csv`. The summary shows FPPG and hit-rate lift against the same season and 25-slot ADP mix. It also counts top-50 and top-100 finishes, losses of at least 25 slots, and unranked picks. Use `backtest_value.py --save-cv-results` and then `backtest_adp_bands.py --results data/backtest_value_cv_results.csv` to compare these bands over the earlier chronological folds. You can also use `--results data/backtest_model_results.csv` for the supervised models.
 
 ## Draft value beyond hit rate
 

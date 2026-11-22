@@ -62,7 +62,8 @@ def evaluate_split(training, evaluated, top_pct):
     return report
 
 
-def run_backtest(data, *, holdout_seasons=2, cv_folds=5, top_pct=25, min_adp=0, max_adp=float("inf")):
+def run_backtest(data, *, holdout_seasons=2, cv_folds=5, top_pct=25, min_adp=0, max_adp=float("inf"),
+                 save_cv_results=False):
     rows = list(draft_rows(data, extra_prior_features=load_opportunity_features))
     for row in rows:
         for feature in OPPORTUNITY_FEATURES:
@@ -81,17 +82,22 @@ def run_backtest(data, *, holdout_seasons=2, cv_folds=5, top_pct=25, min_adp=0, 
         raise ValueError("no holdout candidates in the requested ADP range")
 
     folds = []
+    cv_results = []
     for year in development[1:][-cv_folds:]:
         earlier = [row for row in training if row["draft_season"] < year]
         candidates = [row.copy() for row in eligible if row["draft_season"] == year]
         if len({row["beat_adp"] for row in earlier}) < 2 or not candidates:
             continue
         report = evaluate_split(earlier, candidates, top_pct)
+        if save_cv_results:
+            cv_results.extend(candidates)
         folds.extend({"evaluation_draft": year, "training_through": max(r["draft_season"] for r in earlier), **r}
                      for r in report)
 
     summary = evaluate_split(training, evaluated, top_pct)
     write_csv(data / "backtest_value_cv.csv", folds, fieldnames=["evaluation_draft", "training_through", *summary[0]])
+    if save_cv_results:
+        write_csv(data / "backtest_value_cv_results.csv", cv_results, fieldnames=list(evaluated[0]))
     write_csv(data / "backtest_value_summary.csv", summary)
     write_csv(data / "backtest_value_results.csv", evaluated)
     print(f"Training drafts: {', '.join(development)}")
@@ -112,6 +118,7 @@ def main():
     parser.add_argument("--data", type=Path, default=Path("data"), help="download folder (default: data)")
     parser.add_argument("--holdout-seasons", type=int, default=2, help="latest draft seasons to evaluate (default: 2)")
     parser.add_argument("--cv-folds", type=int, default=5, help="max earlier chronological evaluation folds (default: 5)")
+    parser.add_argument("--save-cv-results", action="store_true", help="save player-level predictions from earlier folds")
     parser.add_argument("--top-pct", type=float, default=25, help="percentage selected each draft (default: 25)")
     parser.add_argument("--min-adp", type=float, default=0, help="minimum candidate ADP for evaluation")
     parser.add_argument("--max-adp", type=float, default=float("inf"), help="maximum candidate ADP for evaluation")
