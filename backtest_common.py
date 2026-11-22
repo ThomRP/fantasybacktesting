@@ -246,10 +246,11 @@ def read_adp(path):
                 yield name, adp
 
 
-def draft_outcomes(following, prior_players, following_players):
+def draft_outcomes(following, prior_players, following_players, *, match_prior_only=False):
     # Match the draft to ESPN by name, then track the athlete by ESPN ID.
     athlete_ids = defaultdict(set)
-    for players in (prior_players, following_players):
+    player_sets = (prior_players,) if match_prior_only else (prior_players, following_players)
+    for players in player_sets:
         for athlete_id, player in players.items():
             for name in player.names:
                 athlete_ids[name_key(name)].add(athlete_id)

@@ -134,6 +134,30 @@ A regular starter started at least half of their second-year regular-season appe
 
 The player-level CSV also includes `rookie_position` and `height_inches`. Position comes from the most frequent listing in the player's rookie regular-season box scores, with their ESPN profile as a fallback. Broad listings such as `G` and `F` are reported as given. Heights come from ESPN's listed profiles. Missing values appear in an `Unknown` group and count toward the overall rate. [ESPN player data archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_core)
 
+## Player profiles with K-means and PCA
+
+This backtest groups drafted players who appeared in the prior regular season. It uses ADP, age at the prior All-Star break, games played, fantasy points per game, the post-break change in fantasy points per game, and start percentage. All game features come from the prior regular season.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe backtest_clusters.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python backtest_clusters.py
+```
+
+The script learns four profiles from earlier drafts and checks their ADP hit rates in the latest two completed drafts. It fits feature scaling, missing-value medians, K-means, and PCA using the earlier drafts. You can change the split or profile count with `--holdout-seasons` and `--clusters`.
+
+- `data/backtest_cluster_summary.csv` shows each profile's training center, holdout sample size, average ADP, and hit rate alongside the overall holdout rate.
+- `data/backtest_cluster_results.csv` has the held-out player records, profile assignments, and actual finishes.
+- `data/backtest_cluster_pca.csv` shows which features contribute to the first two components and how much input variation each component explains. The held-out hit rates measure associations with beating ADP.
+
 ## Files
 
 Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to choose a different root.
