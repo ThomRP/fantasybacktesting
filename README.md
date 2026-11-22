@@ -301,6 +301,24 @@ Each fold trains on earlier season pairs with box scores. The latest two complet
 
 `data/backtest_fppg_summary.csv` reports forecast errors (MAE and RMSE), players with no appearances, and the draft check. `data/backtest_fppg_predictions.csv` includes the prior-season inputs, projections, and outcomes. Players with zero games keep their forecasts and are omitted from forecast error averages.
 
+### Compare top-three draft shortlists
+
+`backtest_top_three.py` reads the saved FPPG forecasts and takes three picks per draft from `50 < ADP <= 75`. It compares the raw forecasts with forecasts minus the prior season's league-wide FPPG at each player's exact ADP slot. That draft-price benchmark uses the preceding season, with interpolation for fractional ADPs.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_top_three.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_top_three.py
+```
+
+Generate the forecasts first with `backtest_fppg.py`. The comparison also includes `logistic_base` in drafts where the existing `backtest_value_results.csv` or `backtest_value_cv_results.csv` covers the same candidates and ADPs. Generate both score files with `backtest_value.py --save-cv-results`. The script writes `data/backtest_top_three_summary.csv` and `data/backtest_top_three_picks.csv`, with results for the whole shortlist and for the added third pick.
+
 ## Draft value beyond hit rate
 
 The backtests report hit rate alongside two measures of how large the gains and losses were.
