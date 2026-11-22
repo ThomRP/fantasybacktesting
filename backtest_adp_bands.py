@@ -30,7 +30,7 @@ def summarize(draft, band, model, pool, picks):
         "selected_unranked": len(picks) - ranked,
         "selected_hits": hits,
         "selected_hit_rate_pct": round(100 * hits / ranked, 2) if ranked else None,
-        "selected_avg_adp": round(mean(row["adp"] for row in picks), 2),
+        "selected_avg_adp": round(mean(row["adp"] for row in picks), 2) if picks else None,
         "selected_avg_fppg_above_adp": round(mean(margins), 3) if margins else None,
         "selected_top_50": sum(row["next_rank"] <= 50 for row in picks if row["next_rank"] is not None),
         "selected_top_100": sum(row["next_rank"] <= 100 for row in picks if row["next_rank"] is not None),

@@ -259,6 +259,28 @@ The default bands have upper ADP limits of 25, 50, 75, 100, 125, and 150, with a
 
 The script writes `data/backtest_value_adp_band_summary.csv` and `data/backtest_value_adp_band_picks.csv`. The summary shows FPPG and hit-rate lift against the same season and 25-slot ADP mix. It also counts top-50 and top-100 finishes, losses of at least 25 slots, and unranked picks. Use `backtest_value.py --save-cv-results` and then `backtest_adp_bands.py --results data/backtest_value_cv_results.csv` to compare these bands over the earlier chronological folds. You can also use `--results data/backtest_model_results.csv` for the supervised models.
 
+### Test a short target list and an availability screen
+
+`backtest_draft_targets.py` reads the full player-level scores from `backtest_value.py`. For ADP above 50 through 75, it compares the top two `logistic_base` scores in each draft with the top quarter. For ADP above 125 through 150, it compares the `value_base` top quarter with a screen that requires at least 50 prior regular-season games. The games threshold is a proxy for availability. Change it with `--min-prior-games`.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_draft_targets.py
+.\.venv\Scripts\python.exe backtest_draft_targets.py --results data/backtest_value_cv_results.csv
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_draft_targets.py
+.venv/bin/python backtest_draft_targets.py --results data/backtest_value_cv_results.csv
+```
+
+Generate the earlier fold scores with `backtest_value.py --save-cv-results`. Each screen fills the original top-quarter quota from the highest-scoring eligible players in that draft and ADP band. The summary counts replacements, unfilled targets, zero-game outcomes, and 1–10-game outcomes. It includes both hit rate among ranked players and wins per target, which counts unranked and unfilled targets in the denominator. The summary and picks CSVs use the suffixes `_draft_targets_summary.csv` and `_draft_targets_picks.csv`.
+
+To test actual draft-time availability, add `--availability data/draft_availability.csv`. The CSV needs `draft_season,athlete_id,reported_at,draft_at,status`. Use ISO 8601 timestamps with offsets such as `2024-10-17T13:00:00-04:00`, and enter the actual draft time as the cutoff. Mark a known sustained absence `out` and a documented clearance `available`. The latest status at or before the supplied cutoff is used. Players with unknown status stay eligible. The summary reports how many candidates had a dated status. This comparison uses the dated screen on its own alongside the games-played proxy.
+
 ## Draft value beyond hit rate
 
 The backtests report hit rate alongside two measures of how large the gains and losses were.
