@@ -66,6 +66,20 @@ def add_rookie_profiles(data, ending_year, rows, prior_players):
         row["height_inches"] = listed_height(profile)
 
 
+def lineup_details(player):
+    if player is None:
+        return {"next_starts": 0, "next_start_pct": None, "next_lineup_role": "No games"}
+    if player.games_without_start_status:
+        return {"next_starts": None, "next_start_pct": None, "next_lineup_role": "Unknown"}
+
+    role = "Regular starter" if player.starts * 2 >= player.total_games else "Started fewer than half"
+    return {
+        "next_starts": player.starts,
+        "next_start_pct": round(100 * player.starts / player.total_games, 1),
+        "next_lineup_role": role,
+    }
+
+
 def hit_rate_row(breakdown, group, rows):
     hits = sum(row["beat_adp"] for row in rows)
     return {
@@ -79,13 +93,18 @@ def hit_rate_row(breakdown, group, rows):
 
 def report_rookie_breakdown(output, results):
     rookies = [row for row in results if row["second_year"]]
+    by_role = defaultdict(list)
     by_position = defaultdict(list)
     by_height = defaultdict(list)
     for row in rookies:
+        by_role[row["next_lineup_role"]].append(row)
         by_position[row["rookie_position"] or "Unknown"].append(row)
         by_height[row["height_inches"]].append(row)
 
     summary = [hit_rate_row("overall", "Second-year players", rookies)]
+    for role in ("Regular starter", "Started fewer than half", "No games", "Unknown"):
+        if by_role[role] or role == "Regular starter":
+            summary.append(hit_rate_row("lineup_role", role, by_role[role]))
     for position in sorted(by_position):
         summary.append(hit_rate_row("position", position, by_position[position]))
     for inches in sorted(by_height, key=lambda height: (height is None, height)):
@@ -97,8 +116,11 @@ def report_rookie_breakdown(output, results):
 
     write_csv(output, summary)
     for row in summary[1:]:
-        print(f"{row['breakdown'].title()} {row['group']}: {row['beat_adp']}/{row['players']} "
-              f"beat ADP ({row['beat_adp_pct']:.1f}%)")
+        label = f"{row['breakdown'].replace('_', ' ').title()} {row['group']}"
+        if row["players"]:
+            print(f"{label}: {row['beat_adp']}/{row['players']} beat ADP ({row['beat_adp_pct']:.1f}%)")
+        else:
+            print(f"{label}: no eligible player-seasons")
     print(f"Saved second-year breakdown to {output}")
 
 
@@ -133,6 +155,7 @@ def run_backtest(data):
                 **outcome,
                 "rookie_position": None,
                 "height_inches": None,
+                **lineup_details(following_players.get(athlete_id)),
             }
             for name, athlete_id, outcome in outcomes
             if athlete_id in prior_players

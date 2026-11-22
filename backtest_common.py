@@ -46,6 +46,8 @@ class PlayerSeason:
     pre_points: int = 0
     post_points: int = 0
     positions: Counter[str] = field(default_factory=Counter)
+    starts: int = 0
+    games_without_start_status: int = 0
 
     @property
     def total_points(self):
@@ -100,7 +102,7 @@ def archived_lines(path):
                 stats["three_point_field_goals_made"] = threes.split("-")[0]
                 athlete = player["athlete"]
                 position = (athlete.get("position") or {}).get("abbreviation")
-                yield str(athlete["id"]), athlete["displayName"], fantasy_points(stats), position
+                yield str(athlete["id"]), athlete["displayName"], fantasy_points(stats), position, player.get("starter")
 
 
 def player_lines(folder, game_dates):
@@ -110,14 +112,17 @@ def player_lines(folder, game_dates):
         if game_id not in game_dates or row["did_not_play"].lower() == "true" or row["minutes"] in ("", "--"):
             continue
         covered_games.add(game_id)
-        yield game_id, row["athlete_id"], row["athlete_display_name"], fantasy_points(row), row.get("athlete_position_abbreviation")
+        yield (
+            game_id, row["athlete_id"], row["athlete_display_name"], fantasy_points(row),
+            row.get("athlete_position_abbreviation"), row.get("starter"),
+        )
 
     for game_id in sorted(game_dates.keys() - covered_games):
         path = folder / "game_json" / f"{game_id}.json"
         if path.is_file():
-            for athlete_id, name, points, position in archived_lines(path):
+            for athlete_id, name, points, position, starter in archived_lines(path):
                 covered_games.add(game_id)
-                yield game_id, athlete_id, name, points, position
+                yield game_id, athlete_id, name, points, position, starter
 
     missing = game_dates.keys() - covered_games
     if missing:
@@ -140,11 +145,16 @@ def read_season(folder, *, split_at_all_star=True):
 
     game_dates = {g["game_id"]: g["game_date"] for g in schedule if regular_season_game(g)}
     players = defaultdict(PlayerSeason)
-    for game_id, athlete_id, name, points, position in player_lines(folder, game_dates):
+    for game_id, athlete_id, name, points, position, starter in player_lines(folder, game_dates):
         player = players[athlete_id]
         player.names.add(name)
         if position:
             player.positions[position] += 1
+        start_status = str(starter).strip().lower()
+        if start_status == "true":
+            player.starts += 1
+        elif start_status != "false":
+            player.games_without_start_status += 1
         if all_star_date is not None and game_dates[game_id] > all_star_date:
             player.post_games += 1
             player.post_points += points
