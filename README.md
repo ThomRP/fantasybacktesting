@@ -54,9 +54,11 @@ The positional year is the **start of the NBA season**. Add a second starting ye
 
 Each season needs a populated ADP table before the downloader requests its game files. Use `--games-only` to skip the ADP lookup. Add `--play-by-play` for event-level data, which can add several hundred MB per season. The downloader reports failures by season and exits with a nonzero status if any season fails.
 
-## All-Star break backtest
+## All-Star break backtests
 
 Run the backtest from the repository root after downloading consecutive completed seasons. If you downloaded to a different folder, pass its path with `--data`.
+
+### Post-break surge
 
 **Windows (PowerShell)**
 
@@ -70,11 +72,11 @@ Run the backtest from the repository root after downloading consecutive complete
 .venv/bin/python backtest.py
 ```
 
-The script applies the league scoring in `backtest.py` to games that count in the regular-season standings. Both the surge and the following-season rank use only those games. A player qualifies for the test with at least one game on each side of the All-Star break and positive pre-break fantasy points per game. A rise of 10% or more flags a surge.
+Both backtests apply the league scoring in `backtest_common.py` to games that count in the regular-season standings. A player qualifies with at least one game on each side of the All-Star break and positive pre-break fantasy points per game. In `backtest.py`, a rise of 10% or more flags a surge.
 
 In the following season, players beat ADP if their rank by total regular-season fantasy points is better than their average draft pick. A matched player who misses the entire season counts as a miss. The script prints how many ADP entries it matches to unique ESPN players and compares hit rates for surging players and other eligible players. Find the individual results in `data/backtest_results.csv`.
 
-### Ages 23–29
+#### Ages 23–29
 
 **Windows (PowerShell)**
 
@@ -88,7 +90,25 @@ In the following season, players beat ADP if their rank by total regular-season 
 .venv/bin/python backtest.py --ages 23 29
 ```
 
-The age range applies to both groups. Age is measured on the All-Star date in the season where the surge is measured, and next-season ranks still use the full NBA player pool. The first run fetches ESPN birth dates and caches them under `data/player_core/`. It reports missing birth dates and saves results with `age_at_break` to `data/backtest_results_ages_23_29.csv`. [ESPN player data archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_core)
+The age range applies to both groups. Age is measured on the All-Star date of the season before the draft being tested, and next-season ranks still use the full NBA player pool. The first run fetches ESPN birth dates and caches them under `data/player_core/`. It reports missing birth dates and saves results with `age_at_break` to `data/backtest_results_ages_23_29.csv`. [ESPN player data archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_core)
+
+### Post-break decline
+
+This backtest compares next-season ADP hit rates for players whose fantasy points per game fell by at least 10% after the All-Star break and other eligible players.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_decline.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_decline.py
+```
+
+Results go to `data/backtest_decline_results.csv`. Add `--ages 23 29` to either command for the age-restricted run, which saves to `data/backtest_decline_results_ages_23_29.csv`.
 
 ## Files
 
