@@ -8,7 +8,9 @@ import re
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 SCORING = {
     "field_goals_made": 2,
@@ -51,6 +53,7 @@ def read_csv(path):
 
 
 def regular_season_game(game):
+    """Select completed games that count in the regular-season standings."""
     headline = game["notes_headline"].lower()
     cup_final = "championship" in headline and (
         "nba cup" in headline or "in-season tournament" in headline
@@ -132,7 +135,56 @@ def read_season(folder):
             player.pre_points += points
     if not players:
         raise ValueError(f"{folder.name}: no usable regular-season player box scores")
-    return players
+    return date.fromisoformat(all_star_date), players
+
+
+def read_birth_dates(path):
+    dates = {
+        row["athlete_id"]: date.fromisoformat(row["date_of_birth"][:10])
+        for row in read_csv(path)
+        if row["date_of_birth"]
+    }
+    if not dates:
+        raise ValueError(f"{path}: no player birth dates found")
+    return dates
+
+
+def load_birth_dates(data, ending_year):
+    cache = data / "player_core"
+    path = cache / f"player_core_{ending_year}.csv"
+    if path.is_file():
+        return read_birth_dates(path)
+
+    from download import ESPN_ARCHIVE, download_file
+
+    url = f"{ESPN_ARCHIVE}/espn_nba_player_core/{path.name}"
+    cache.mkdir(exist_ok=True)
+    with TemporaryDirectory(dir=cache) as temp:
+        staged = Path(temp) / path.name
+        download_file(url, staged)
+        dates = read_birth_dates(staged)
+        staged.replace(path)
+    return dates
+
+
+def filter_by_age(rows, birth_dates, all_star_date, ages):
+    youngest, oldest = ages
+    eligible = []
+    missing_birth_dates = 0
+    for row in rows:
+        birth = birth_dates.get(row["athlete_id"])
+        if birth is None:
+            missing_birth_dates += 1
+            continue
+        age = all_star_date.year - birth.year
+        if (all_star_date.month, all_star_date.day) < (birth.month, birth.day):
+            age -= 1
+        if youngest <= age <= oldest:
+            eligible.append({**row, "age_at_break": age})
+
+    print(f"  Ages {youngest}-{oldest}: kept {len(eligible)}/{len(rows)} eligible rows, "
+          f"{missing_birth_dates} missing birth dates")
+    return eligible
 
 
 def name_key(name):
@@ -222,7 +274,7 @@ def compare_seasons(prior, following, prior_players, following_players):
     return results
 
 
-def run_backtest(data):
+def run_backtest(data, ages=None):
     seasons = {int(p.name[:4]): p for p in data.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}", p.name)}
     stats = {}
     results = []
@@ -238,12 +290,19 @@ def run_backtest(data):
                 stats[folder] = read_season(folder)
         if stats[prior] is None or stats[following] is None:
             continue
-        results.extend(compare_seasons(prior, following, stats[prior], stats[following]))
+        all_star_date, prior_players = stats[prior]
+        _, following_players = stats[following]
+        season_results = compare_seasons(prior, following, prior_players, following_players)
+        if ages is not None and season_results:
+            birth_dates = load_birth_dates(data, year + 1)
+            season_results = filter_by_age(season_results, birth_dates, all_star_date, ages)
+        results.extend(season_results)
 
     if not results:
         raise ValueError("no eligible player-seasons found. Use consecutive downloaded seasons with ADP in the later season")
 
-    output = data / "backtest_results.csv"
+    suffix = f"_ages_{ages[0]}_{ages[1]}" if ages is not None else ""
+    output = data / f"backtest_results{suffix}.csv"
     with output.open("w", encoding="utf-8-sig", newline="") as destination:
         writer = csv.DictWriter(destination, fieldnames=list(results[0]))
         writer.writeheader()
@@ -262,9 +321,13 @@ def run_backtest(data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=Path("data"), help="download folder (default: data)")
+    parser.add_argument("--ages", nargs=2, type=int, metavar=("MIN", "MAX"),
+                        help="inclusive age range at the signal season's All-Star break")
     args = parser.parse_args()
+    if args.ages is not None and not 0 <= args.ages[0] <= args.ages[1]:
+        parser.error("--ages requires a nonnegative minimum and a maximum at least as large")
     try:
-        run_backtest(args.data)
+        run_backtest(args.data, args.ages)
     except (OSError, ValueError, KeyError, csv.Error) as error:
         parser.exit(1, f"Backtest failed: {error}\n")
 

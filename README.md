@@ -70,9 +70,25 @@ Run the backtest from the repository root after downloading consecutive complete
 .venv/bin/python backtest.py
 ```
 
-The script applies the league scoring in `backtest.py` to each regular-season game played. A player qualifies for the test with at least one game on each side of the All-Star break and positive pre-break fantasy points per game. A rise of 10% or more flags a surge.
+The script applies the league scoring in `backtest.py` to games that count in the regular-season standings. Both the surge and the following-season rank use only those games. A player qualifies for the test with at least one game on each side of the All-Star break and positive pre-break fantasy points per game. A rise of 10% or more flags a surge.
 
 In the following season, players beat ADP if their rank by total regular-season fantasy points is better than their average draft pick. A matched player who misses the entire season counts as a miss. The script prints how many ADP entries it matches to unique ESPN players and compares hit rates for surging players and other eligible players. Find the individual results in `data/backtest_results.csv`.
+
+### Ages 23–29
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest.py --ages 23 29
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest.py --ages 23 29
+```
+
+The age range applies to both groups. Age is measured on the All-Star date in the season where the surge is measured, and next-season ranks still use the full NBA player pool. The first run fetches ESPN birth dates and caches them under `data/player_core/`. It reports missing birth dates and saves results with `age_at_break` to `data/backtest_results_ages_23_29.csv`. [ESPN player data archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_core)
 
 ## Files
 
