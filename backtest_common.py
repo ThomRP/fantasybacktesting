@@ -386,9 +386,11 @@ def run_backtest(data, backtest, ages=None):
     report_results(output, results, backtest.column, backtest.label)
 
 
-def write_csv(output, rows):
+def write_csv(output, rows, *, fieldnames=None):
+    if fieldnames is None:
+        fieldnames = list(rows[0])
     with output.open("w", encoding="utf-8-sig", newline="") as destination:
-        writer = csv.DictWriter(destination, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(destination, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 

@@ -10,6 +10,7 @@ from backtest_common import (
     draft_outcomes, format_value_metrics, load_player_profiles, name_key, player_lines, read_csv,
     regular_season_game, report_results, run_cli, season_pairs, value_metrics, write_csv,
 )
+from backtest_rookie_plots import write_starter_plots
 
 FIRST_ARCHIVE_YEAR = 1994  # ESPN season files are named by ending year.
 OPENER_ROLES = ("Started team opener", "Did not start team opener", "Unknown")
@@ -116,6 +117,16 @@ def opener_details(athlete_id, starters, complete):
     }
 
 
+def is_opener_majority_starter(row):
+    starts = row["next_starts"]
+    return (
+        row["second_year"]
+        and row["next_opener_role"] == "Started team opener"
+        and starts is not None
+        and 2 * starts > row["next_games"]
+    )
+
+
 def hit_rate_row(breakdown, group, rows):
     hits = sum(row["beat_adp"] for row in rows)
     return {
@@ -145,7 +156,11 @@ def report_rookie_breakdown(output, results):
         by_position[row["rookie_position"] or "Unknown"].append(row)
         by_height[row["height_inches"]].append(row)
 
-    summary = [hit_rate_row("overall", "Second-year players", rookies)]
+    majority_starters = [row for row in rookies if row["opener_majority_starter"]]
+    summary = [
+        hit_rate_row("overall", "Second-year players", rookies),
+        hit_rate_row("opener_majority", "Started opener and majority of games", majority_starters),
+    ]
     for breakdown, groups in (("opening_lineup", by_opener),
                               ("opening_lineup_among_regular_starters", regular_starters_by_opener)):
         summary.extend(hit_rate_row(breakdown, role, groups[role]) for role in OPENER_ROLES)
@@ -209,6 +224,8 @@ def run_backtest(data):
             for name, athlete_id, outcome in outcomes
             if athlete_id in prior_players
         ]
+        for row in rows:
+            row["opener_majority_starter"] = is_opener_majority_starter(row)
         second_year_count = sum(row["second_year"] for row in rows)
         if second_year_count:
             add_rookie_profiles(data, year + 1, rows, prior_players)
@@ -219,6 +236,13 @@ def run_backtest(data):
     report_results(data / "backtest_rookie_results.csv", results, "second_year",
                    "Second-year players", "Other returning players")
     report_rookie_breakdown(data / "backtest_rookie_summary.csv", results)
+    cohort = [row for row in results if row["opener_majority_starter"]]
+    cohort.sort(key=lambda row: (-row["adp_slots_gained"], row["player"].casefold(), row["draft_season"]))
+    cohort_csv = data / "backtest_rookie_opener_majority.csv"
+    plots = data / "backtest_rookie_opener_majority.pdf"
+    write_csv(cohort_csv, cohort, fieldnames=list(results[0]))
+    write_starter_plots(plots, cohort)
+    print(f"Saved {len(cohort)} qualifying players to {cohort_csv} and {plots}")
 
 
 if __name__ == "__main__":

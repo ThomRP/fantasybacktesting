@@ -117,16 +117,26 @@ The rookie season is the first season a player appeared in a regular-season NBA 
 **Windows (PowerShell)**
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe backtest_rookies.py
 ```
 
 **macOS and Linux**
 
 ```sh
+.venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python backtest_rookies.py
 ```
 
 Results go to `data/backtest_rookie_results.csv`. The `second_year` column identifies players in the rookie cohort. On the first run, the script fetches ESPN regular-season appearance history back to 1993–94 and caches player IDs in `data/player_history/`. [ESPN season statistics archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_season_stats)
+
+### Opener and majority starters
+
+This group includes sophomores who started their team's first regular-season game and started **more than half** of their own regular-season appearances. Find their aggregate results in the `opener_majority` row of `data/backtest_rookie_summary.csv` and individual results in `data/backtest_rookie_opener_majority.csv`.
+
+Open `data/backtest_rookie_opener_majority.pdf` for three plots covering all qualifying players, those who beat ADP, and those who tied or missed ADP. Each plot shows slots gained or lost with each player's ADP, finish rank, starts, games played, and fantasy points versus ADP.
+
+### Other breakdowns
 
 The test also prints how many second-year players beat ADP by lineup role, rookie position, and exact listed height. `data/backtest_rookie_summary.csv` contains the overall rate and each breakdown with player counts.
 
