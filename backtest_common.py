@@ -6,7 +6,7 @@ import json
 import math
 import re
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -45,6 +45,7 @@ class PlayerSeason:
     post_games: int = 0
     pre_points: int = 0
     post_points: int = 0
+    positions: Counter[str] = field(default_factory=Counter)
 
     @property
     def total_points(self):
@@ -98,7 +99,8 @@ def archived_lines(path):
                 threes = stats["threePointFieldGoalsMade-threePointFieldGoalsAttempted"]
                 stats["three_point_field_goals_made"] = threes.split("-")[0]
                 athlete = player["athlete"]
-                yield str(athlete["id"]), athlete["displayName"], fantasy_points(stats)
+                position = (athlete.get("position") or {}).get("abbreviation")
+                yield str(athlete["id"]), athlete["displayName"], fantasy_points(stats), position
 
 
 def player_lines(folder, game_dates):
@@ -108,14 +110,14 @@ def player_lines(folder, game_dates):
         if game_id not in game_dates or row["did_not_play"].lower() == "true" or row["minutes"] in ("", "--"):
             continue
         covered_games.add(game_id)
-        yield game_id, row["athlete_id"], row["athlete_display_name"], fantasy_points(row)
+        yield game_id, row["athlete_id"], row["athlete_display_name"], fantasy_points(row), row.get("athlete_position_abbreviation")
 
     for game_id in sorted(game_dates.keys() - covered_games):
         path = folder / "game_json" / f"{game_id}.json"
         if path.is_file():
-            for athlete_id, name, points in archived_lines(path):
+            for athlete_id, name, points, position in archived_lines(path):
                 covered_games.add(game_id)
-                yield game_id, athlete_id, name, points
+                yield game_id, athlete_id, name, points, position
 
     missing = game_dates.keys() - covered_games
     if missing:
@@ -138,9 +140,11 @@ def read_season(folder, *, split_at_all_star=True):
 
     game_dates = {g["game_id"]: g["game_date"] for g in schedule if regular_season_game(g)}
     players = defaultdict(PlayerSeason)
-    for game_id, athlete_id, name, points in player_lines(folder, game_dates):
+    for game_id, athlete_id, name, points, position in player_lines(folder, game_dates):
         player = players[athlete_id]
         player.names.add(name)
+        if position:
+            player.positions[position] += 1
         if all_star_date is not None and game_dates[game_id] > all_star_date:
             player.post_games += 1
             player.post_points += points
@@ -152,22 +156,18 @@ def read_season(folder, *, split_at_all_star=True):
     return (date.fromisoformat(all_star_date) if all_star_date else None), players
 
 
-def read_birth_dates(path):
-    dates = {
-        row["athlete_id"]: date.fromisoformat(row["date_of_birth"][:10])
-        for row in read_csv(path)
-        if row["date_of_birth"]
-    }
-    if not dates:
-        raise ValueError(f"{path}: no player birth dates found")
-    return dates
+def read_player_profiles(path):
+    profiles = {row["athlete_id"]: row for row in read_csv(path)}
+    if not profiles:
+        raise ValueError(f"{path}: no player profiles found")
+    return profiles
 
 
-def load_birth_dates(data, ending_year):
+def load_player_profiles(data, ending_year):
     cache = data / "player_core"
     path = cache / f"player_core_{ending_year}.csv"
     if path.is_file():
-        return read_birth_dates(path)
+        return read_player_profiles(path)
 
     from download import ESPN_ARCHIVE, download_file
 
@@ -176,8 +176,19 @@ def load_birth_dates(data, ending_year):
     with TemporaryDirectory(dir=cache) as temp:
         staged = Path(temp) / path.name
         download_file(url, staged)
-        dates = read_birth_dates(staged)
+        profiles = read_player_profiles(staged)
         staged.replace(path)
+    return profiles
+
+
+def load_birth_dates(data, ending_year):
+    dates = {
+        athlete_id: date.fromisoformat(profile["date_of_birth"][:10])
+        for athlete_id, profile in load_player_profiles(data, ending_year).items()
+        if profile["date_of_birth"]
+    }
+    if not dates:
+        raise ValueError(f"No player birth dates found for the season ending {ending_year}")
     return dates
 
 
@@ -332,15 +343,18 @@ def run_backtest(data, backtest, ages=None):
     report_results(output, results, backtest.column, backtest.label)
 
 
+def write_csv(output, rows):
+    with output.open("w", encoding="utf-8-sig", newline="") as destination:
+        writer = csv.DictWriter(destination, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def report_results(output, results, cohort_column, label, other_label="Other eligible players"):
     if not results:
         raise ValueError("no eligible player-seasons found. Use consecutive downloaded seasons with ADP in the later season")
 
-    with output.open("w", encoding="utf-8-sig", newline="") as destination:
-        writer = csv.DictWriter(destination, fieldnames=list(results[0]))
-        writer.writeheader()
-        writer.writerows(results)
-
+    write_csv(output, results)
     for group_label, matched in ((label, True), (other_label, False)):
         group = [row for row in results if row[cohort_column] == matched]
         hits = sum(row["beat_adp"] for row in group)

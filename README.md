@@ -128,6 +128,10 @@ The rookie season is the first season a player appeared in a regular-season NBA 
 
 Results go to `data/backtest_rookie_results.csv`. The `second_year` column identifies players in the rookie cohort. On the first run, the script fetches ESPN regular-season appearance history back to 1993–94 and caches player IDs in `data/player_history/`. [ESPN season statistics archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_season_stats)
 
+The test also prints how many second-year players beat ADP at each position and exact listed height. `data/backtest_rookie_summary.csv` contains the overall rate and both breakdowns with player counts. The player-level CSV includes `rookie_position` and `height_inches`.
+
+Position comes from the most frequent listing in the player's rookie regular-season box scores, with their ESPN profile as a fallback. Broad listings such as `G` and `F` are reported as given. Heights come from ESPN's listed profiles. Missing values appear in an `Unknown` group and count toward the overall rate. [ESPN player data archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_core)
+
 ## Files
 
 Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to choose a different root.

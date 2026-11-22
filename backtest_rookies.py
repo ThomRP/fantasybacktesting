@@ -1,9 +1,13 @@
 """Check whether players beat ADP the season after their NBA debut."""
 
+import math
+from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from backtest_common import draft_outcomes, read_csv, report_results, run_cli, season_pairs
+from backtest_common import (
+    draft_outcomes, load_player_profiles, read_csv, report_results, run_cli, season_pairs, write_csv,
+)
 
 FIRST_ARCHIVE_YEAR = 1994  # ESPN season files are named by ending year.
 
@@ -37,6 +41,67 @@ def players_with_appearances(data, ending_year):
     return players
 
 
+def listed_height(profile):
+    try:
+        inches = float(profile.get("height") or 0)
+    except ValueError:
+        return None
+    return inches if math.isfinite(inches) and inches > 0 else None
+
+
+def add_rookie_profiles(data, ending_year, rows, prior_players):
+    try:
+        profiles = load_player_profiles(data, ending_year)
+    except (OSError, ValueError, KeyError) as error:
+        print(f"Could not load ESPN player profiles for the season ending {ending_year}: {error}")
+        profiles = {}
+
+    for row in rows:
+        if not row["second_year"]:
+            continue
+        athlete_id = row["athlete_id"]
+        profile = profiles.get(athlete_id, {})
+        positions = prior_players[athlete_id].positions.most_common(1)
+        row["rookie_position"] = positions[0][0] if positions else profile.get("position_abbreviation")
+        row["height_inches"] = listed_height(profile)
+
+
+def hit_rate_row(breakdown, group, rows):
+    hits = sum(row["beat_adp"] for row in rows)
+    return {
+        "breakdown": breakdown,
+        "group": group,
+        "players": len(rows),
+        "beat_adp": hits,
+        "beat_adp_pct": round(100 * hits / len(rows), 1) if rows else None,
+    }
+
+
+def report_rookie_breakdown(output, results):
+    rookies = [row for row in results if row["second_year"]]
+    by_position = defaultdict(list)
+    by_height = defaultdict(list)
+    for row in rookies:
+        by_position[row["rookie_position"] or "Unknown"].append(row)
+        by_height[row["height_inches"]].append(row)
+
+    summary = [hit_rate_row("overall", "Second-year players", rookies)]
+    for position in sorted(by_position):
+        summary.append(hit_rate_row("position", position, by_position[position]))
+    for inches in sorted(by_height, key=lambda height: (height is None, height)):
+        height = "Unknown"
+        if inches is not None:
+            feet, remainder = divmod(inches, 12)
+            height = f"{feet:g} ft {remainder:g} in"
+        summary.append(hit_rate_row("height", height, by_height[inches]))
+
+    write_csv(output, summary)
+    for row in summary[1:]:
+        print(f"{row['breakdown'].title()} {row['group']}: {row['beat_adp']}/{row['players']} "
+              f"beat ADP ({row['beat_adp_pct']:.1f}%)")
+    print(f"Saved second-year breakdown to {output}")
+
+
 def run_backtest(data):
     played_before = set()
     archive_through = FIRST_ARCHIVE_YEAR - 1
@@ -66,17 +131,22 @@ def run_backtest(data):
                 "prior_games": prior_players[athlete_id].total_games,
                 "second_year": athlete_id in rookies,
                 **outcome,
+                "rookie_position": None,
+                "height_inches": None,
             }
             for name, athlete_id, outcome in outcomes
             if athlete_id in prior_players
         ]
         second_year_count = sum(row["second_year"] for row in rows)
+        if second_year_count:
+            add_rookie_profiles(data, year + 1, rows, prior_players)
         print(f"{prior.name} to {following.name}: matched {len(outcomes)}/{total_picks} ADP entries to unique players, "
               f"{second_year_count} second-year players and {len(rows) - second_year_count} other returning players")
         results.extend(rows)
 
     report_results(data / "backtest_rookie_results.csv", results, "second_year",
                    "Second-year players", "Other returning players")
+    report_rookie_breakdown(data / "backtest_rookie_summary.csv", results)
 
 
 if __name__ == "__main__":
