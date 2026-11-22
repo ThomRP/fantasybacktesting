@@ -10,7 +10,9 @@ from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 
-from backtest_common import draft_outcomes, format_value_metrics, load_birth_dates, season_pairs, value_metrics, write_csv
+from backtest_common import (
+    adp_hit_counts, draft_outcomes, format_value_metrics, load_birth_dates, season_pairs, value_metrics, write_csv,
+)
 
 FEATURES = (
     "adp",
@@ -26,7 +28,9 @@ def draft_rows(data):
     for year, prior, following, prior_stats, following_stats in season_pairs(data):
         all_star_date, prior_players = prior_stats
         _, following_players = following_stats
-        outcomes, total_picks = draft_outcomes(following, prior_players, following_players, match_prior_only=True)
+        outcomes, total_picks = draft_outcomes(
+            following, prior_players, following_players, match_prior_only=True, rank_per_game=True,
+        )
         print(f"{prior.name} to {following.name}: matched {len(outcomes)}/{total_picks} ADP entries to prior-season players")
         if not outcomes:
             continue
@@ -71,16 +75,17 @@ def feature_matrix(rows, features):
 
 
 def summary_row(cluster, train_count, evaluated):
-    hits = sum(row["beat_adp"] for row in evaluated)
+    hits, ranked = adp_hit_counts(evaluated)
     count = len(evaluated)
     return {
         "cluster": cluster,
         "training_players": train_count,
         "holdout_players": count,
         "holdout_beat_adp": hits,
-        "holdout_beat_adp_pct": round(100 * hits / count, 1) if count else None,
+        "holdout_beat_adp_pct": round(100 * hits / ranked, 1) if ranked else None,
         "holdout_avg_adp": round(mean(row["adp"] for row in evaluated), 1) if count else None,
-        **value_metrics(evaluated),
+        "unranked_players": count - ranked,
+        **value_metrics(evaluated, per_game=True),
     }
 
 
@@ -134,14 +139,18 @@ def run_backtest(data, clusters=4, holdout_seasons=2):
     write_csv(data / "backtest_cluster_results.csv", evaluated)
     write_csv(data / "backtest_cluster_summary.csv", summary)
     write_csv(data / "backtest_cluster_pca.csv", components)
+    print("Ranking holdout outcomes by regular-season fantasy points per game")
     print(f"Training drafts: {', '.join(seasons[:-holdout_seasons])}")
     print(f"Holdout drafts: {', '.join(sorted(holdout))}")
     for row in summary:
         label = "Overall" if row["cluster"] == "Overall" else f"Cluster {row['cluster']}"
-        count = row["holdout_players"]
-        if count:
-            print(f"{label}: {row['holdout_beat_adp']}/{count} beat ADP ({row['holdout_beat_adp_pct']:.1f}%), "
-                  f"average ADP {row['holdout_avg_adp']:.1f}, {format_value_metrics(row)}")
+        ranked = row["ranked_players"]
+        if ranked:
+            unranked = f", {row['unranked_players']} unranked" if row["unranked_players"] else ""
+            print(f"{label}: {row['holdout_beat_adp']}/{ranked} beat ADP ({row['holdout_beat_adp_pct']:.1f}%){unranked}, "
+                  f"average ADP {row['holdout_avg_adp']:.1f}, {format_value_metrics(row, per_game=True)}")
+        elif row["holdout_players"]:
+            print(f"{label}: {row['unranked_players']} unranked holdout players")
         else:
             print(f"{label}: no holdout players")
 

@@ -166,10 +166,10 @@ This backtest groups drafted players who appeared in the prior regular season. I
 .venv/bin/python backtest_clusters.py
 ```
 
-The script learns four profiles from earlier drafts and checks their ADP hit rates in the latest two completed drafts. It fits feature scaling, missing-value medians, K-means, and PCA using the earlier drafts. You can change the split or profile count with `--holdout-seasons` and `--clusters`.
+The script learns four profiles from earlier drafts and checks their ADP hit rates in the latest two completed drafts. It fits feature scaling, missing-value medians, K-means, and PCA using the earlier drafts. The holdout evaluation compares ADP with league-wide regular-season FPPG rank. Players with zero games are reported as unranked and excluded from the hit rates and value averages. You can change the split or profile count with `--holdout-seasons` and `--clusters`.
 
-- `data/backtest_cluster_summary.csv` shows each profile's training center, holdout sample size, average ADP, and hit rate alongside the overall holdout rate.
-- `data/backtest_cluster_results.csv` has the held-out player records, profile assignments, and actual finishes.
+- `data/backtest_cluster_summary.csv` shows each profile's training center, holdout and ranked sample sizes, average ADP, hit rate, and FPPG margin alongside the overall holdout results.
+- `data/backtest_cluster_results.csv` has the held-out player records, profile assignments, and FPPG finishes.
 - `data/backtest_cluster_pca.csv` shows which features contribute to the first two components and how much input variation each component explains. The held-out hit rates measure associations with beating ADP.
 
 ## Draft value beyond hit rate
@@ -179,13 +179,13 @@ The backtests report hit rate alongside two measures of how large the gains and 
 - **Average ADP slots gained** is ADP minus finish rank, averaged over players with a rank. Positive means a better finish rank than ADP. The reports show the ranked sample size.
 - **Average FPTS above ADP** is actual regular-season fantasy points minus the points scored at the player's ADP slot on that season's league-wide leaderboard. Fractional ADPs interpolate between adjacent slots. The benchmark has a zero floor, and a player who missed the season scores zero actual points in this calculation.
 
-The surge, decline, and cluster backtests use season totals and show `adp_slot_fpts` and `fpts_above_adp`. The rookie backtest uses the same comparison on the per-game leaderboard, with `next_fppg`, `adp_slot_fppg`, and `fppg_above_adp` in the player-level files. Summary CSVs and console reports use the units of their respective leaderboard. Compare each group's average with the corresponding overall or comparison group value in the same run.
+The surge and decline backtests use season totals and show `adp_slot_fpts` and `fpts_above_adp`. The rookie and cluster backtests use the same comparison on the per-game leaderboard, with `next_fppg`, `adp_slot_fppg`, and `fppg_above_adp` in the player-level files. Summary CSVs and console reports use the units of their respective leaderboard. Compare each group's average with the corresponding overall or comparison group value in the same run.
 
 ### Low-game and outlier sensitivity
 
 The median shows the typical pick. The trimmed mean removes 10% of scored outcomes from each end, rounded down to a whole player count shown in `trimmed_players_per_tail`. The full mean includes every scored pick in the group.
 
-The reports show the contribution of low-game players to the full mean. That contribution is their sum of margins divided by the number of scored picks. The season-total backtests count 0–10 games and the per-game rookie backtest counts 1–10. The `avg_fpts_above_adp_over_10_games` or `avg_fppg_above_adp_over_10_games` column shows the mean among the rest. These are retrospective sensitivity checks using actual games played.
+The reports show the contribution of low-game players to the full mean. That contribution is their sum of margins divided by the number of scored picks. The season-total backtests count 0–10 games and the per-game backtests count 1–10. The `avg_fpts_above_adp_over_10_games` or `avg_fppg_above_adp_over_10_games` column shows the mean among the rest. These are retrospective sensitivity checks using actual games played.
 
 The player-level files include `next_lineup_role` and `next_start_pct` for checking lineup changes. The rookie summary already reports value by second-year lineup role.
 
