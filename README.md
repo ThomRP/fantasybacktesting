@@ -261,7 +261,7 @@ The script writes `data/backtest_value_adp_band_summary.csv` and `data/backtest_
 
 ### Test a short target list and an availability screen
 
-`backtest_draft_targets.py` reads the full player-level scores from `backtest_value.py`. For ADP above 50 through 75, it compares the top two `logistic_base` scores in each draft with the top quarter. For ADP above 125 through 150, it compares the `value_base` top quarter with a screen that requires at least 50 prior regular-season games. The games threshold is a proxy for availability. Change it with `--min-prior-games`.
+`backtest_draft_targets.py` reads the full player-level scores from `backtest_value.py`. For ADP above 50 through 75, compare `top_two` (the two highest `logistic_base` scores per draft) with `prior_fppg_top_two` (the two highest prior regular-season FPPG averages in the same candidate pool). Both use the same pick count, outcomes, and same-price benchmark. The wider logistic top quarter is also reported. For ADP above 125 through 150, the script compares the `value_base` top quarter with a screen that requires at least 50 prior regular-season games. The games threshold is a proxy for availability. Change it with `--min-prior-games`.
 
 **Windows (PowerShell)**
 

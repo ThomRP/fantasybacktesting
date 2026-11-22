@@ -50,7 +50,8 @@ def read_availability(path):
 
 def rank_candidates(candidates, score_column):
     for row in candidates:
-        score = float(row.get(score_column) or "nan")
+        raw_score = row.get(score_column)
+        score = float(raw_score) if raw_score not in (None, "") else math.nan
         if not row.get("athlete_id") or not math.isfinite(score):
             raise ValueError(f"missing athlete_id or {score_column} for {row['player']} in {row['draft_season']}")
         row[score_column] = score
@@ -74,7 +75,10 @@ def evaluate_band(pool, band, model, minimum_games, reports):
         quarter_keys.update(map(player_key, quarter))
         strategies["top_quarter"].append((draft, quota, quarter))
         if model == "logistic_base":
-            strategies["top_two"].append((draft, min(2, len(ranked)), ranked[:2]))
+            short_quota = min(2, len(ranked))
+            strategies["top_two"].append((draft, short_quota, ranked[:short_quota]))
+            prior_fppg_ranked = rank_candidates(candidates, "prior_fppg")
+            strategies["prior_fppg_top_two"].append((draft, short_quota, prior_fppg_ranked[:short_quota]))
         else:
             prior_games = [row for row in ranked if row["prior_games"] >= minimum_games]
             strategies["prior_games_screen"].append((draft, quota, prior_games[:quota]))
@@ -84,10 +88,12 @@ def evaluate_band(pool, band, model, minimum_games, reports):
 
     summary, pick_details = [], []
     for strategy, seasons in strategies.items():
+        strategy_model = "prior_fppg" if strategy == "prior_fppg_top_two" else model
+        strategy_score = "prior_fppg" if strategy == "prior_fppg_top_two" else score_column
         all_picks = [row for _, _, picks in seasons for row in picks]
         for draft, quota, picks in [("Overall", sum(quota for _, quota, _ in seasons), all_picks), *seasons]:
             candidates = pool if draft == "Overall" else by_draft[draft]
-            metrics = summarize(draft, band, model, candidates, picks)
+            metrics = summarize(draft, band, strategy_model, candidates, picks)
             n_reported = sum(player_key(row) in reports for row in candidates) if reports is not None else None
             summary.append({
                 **metrics,
@@ -105,12 +111,12 @@ def evaluate_band(pool, band, model, minimum_games, reports):
             pick_details.append({
                 "draft_season": row["draft_season"],
                 "adp_band": band,
-                "model": model,
+                "model": strategy_model,
                 "strategy": strategy,
                 "player": row["player"],
                 "athlete_id": row["athlete_id"],
                 "adp": row["adp"],
-                "model_score": row[score_column],
+                "model_score": row[strategy_score],
                 "in_top_quarter": key in quarter_keys,
                 "prior_games": row["prior_games"],
                 "draft_status": reports.get(key, "unknown") if reports is not None else None,
