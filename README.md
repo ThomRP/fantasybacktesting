@@ -172,6 +172,27 @@ The script learns four profiles from earlier drafts and checks their ADP hit rat
 - `data/backtest_cluster_results.csv` has the held-out player records, profile assignments, and FPPG finishes.
 - `data/backtest_cluster_pca.csv` shows which features contribute to the first two components and how much input variation each component explains. The held-out hit rates measure associations with beating ADP.
 
+## Predicting who beats ADP
+
+`backtest_models.py` compares an ADP-only logistic model, logistic regression using all six pre-draft features, and shallow gradient-boosted trees. It tunes regularization or tree depth and leaf size on earlier draft-season splits. The latest two drafts are held out for evaluation by default.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_models.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_models.py
+```
+
+Each model selects its top 25% of available picks in each holdout draft. Use `--top-pct` to choose how selective the rule is and `--holdout-seasons` to set the evaluation window. Players with zero appearances can still be selected and appear in the unranked count. Hit rates and average FPPG margins use ranked players.
+
+- `data/backtest_model_summary.csv` compares selected picks with the overall holdout rate and the equally selective ADP-only rule. It also has FPPG margins, whole-holdout average precision and ROC AUC, and the selected validation parameters.
+- `data/backtest_model_results.csv` lists each holdout pick's model scores, selection flags, and FPPG outcome.
+
 ## Draft value beyond hit rate
 
 The backtests report hit rate alongside two measures of how large the gains and losses were.
