@@ -67,20 +67,6 @@ def add_rookie_profiles(data, ending_year, rows, prior_players):
         row["height_inches"] = listed_height(profile)
 
 
-def lineup_details(player):
-    if player is None:
-        return {"next_starts": 0, "next_start_pct": None, "next_lineup_role": "No games"}
-    if player.games_without_start_status:
-        return {"next_starts": None, "next_start_pct": None, "next_lineup_role": "Unknown"}
-
-    role = "Regular starter" if player.starts * 2 >= player.total_games else "Started fewer than half"
-    return {
-        "next_starts": player.starts,
-        "next_start_pct": round(100 * player.starts / player.total_games, 1),
-        "next_lineup_role": role,
-    }
-
-
 def hit_rate_row(breakdown, group, rows):
     hits = sum(row["beat_adp"] for row in rows)
     return {
@@ -158,7 +144,6 @@ def run_backtest(data):
                 **outcome,
                 "rookie_position": None,
                 "height_inches": None,
-                **lineup_details(following_players.get(athlete_id)),
             }
             for name, athlete_id, outcome in outcomes
             if athlete_id in prior_players

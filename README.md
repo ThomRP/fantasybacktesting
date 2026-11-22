@@ -167,6 +167,14 @@ The backtests report hit rate alongside two measures of how large the gains and 
 
 The player-level files show `adp_slot_fpts` and `fpts_above_adp` for each pick. The cluster and rookie summary CSVs include the averages, and the surge and decline tests print them by group. Compare each group's average with the corresponding overall or comparison group value in the same run.
 
+### Low-game and outlier sensitivity
+
+The median shows the typical pick. The trimmed mean removes 10% of outcomes from each end, rounded down to a whole player count shown in `trimmed_players_per_tail`. The full mean includes every pick in the group.
+
+The reports count players with 0–10 games and show how many points they contributed per pick to the full mean. That contribution is their total FPTS margin divided by the entire group's size. `avg_fpts_above_adp_over_10_games` shows the mean among the rest. These are retrospective sensitivity checks using actual games played.
+
+The player-level files include `next_lineup_role` and `next_start_pct` for checking lineup changes. The rookie summary already reports value by second-year lineup role.
+
 ## Files
 
 Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to choose a different root.

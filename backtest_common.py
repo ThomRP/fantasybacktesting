@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 from tempfile import TemporaryDirectory
 
 SCORING = {
@@ -258,6 +258,20 @@ def adp_slot_points(totals, adp):
     return earlier + (later - earlier) * (index - place)
 
 
+def lineup_details(player):
+    if player is None:
+        return {"next_starts": 0, "next_start_pct": None, "next_lineup_role": "No games"}
+    if player.games_without_start_status:
+        return {"next_starts": None, "next_start_pct": None, "next_lineup_role": "Unknown"}
+
+    role = "Regular starter" if player.starts * 2 >= player.total_games else "Started fewer than half"
+    return {
+        "next_starts": player.starts,
+        "next_start_pct": round(100 * player.starts / player.total_games, 1),
+        "next_lineup_role": role,
+    }
+
+
 def draft_outcomes(following, prior_players, following_players, *, match_prior_only=False):
     # Match the draft to ESPN by name, then track the athlete by ESPN ID.
     athlete_ids = defaultdict(set)
@@ -300,6 +314,7 @@ def draft_outcomes(following, prior_players, following_players, *, match_prior_o
             "beat_adp": rank is not None and rank < adp,
             "adp_slot_fpts": round(pick_points, 3),
             "fpts_above_adp": round(actual_points - pick_points, 3),
+            **lineup_details(after),
         }))
     return outcomes, len(picks)
 
@@ -379,15 +394,33 @@ def write_csv(output, rows):
 
 def value_metrics(rows):
     slots = [row["adp_slots_gained"] for row in rows if row["adp_slots_gained"] is not None]
+    margins = sorted(row["fpts_above_adp"] for row in rows)
+    trim_per_tail = len(margins) // 10
+    trimmed = margins[trim_per_tail:len(margins) - trim_per_tail]
+    low_games = [row["fpts_above_adp"] for row in rows if row["next_games"] <= 10]
+    other_games = [row["fpts_above_adp"] for row in rows if row["next_games"] > 10]
     return {
         "ranked_players": len(slots),
         "avg_adp_slots_gained_ranked": round(mean(slots), 1) if slots else None,
-        "avg_fpts_above_adp": round(mean(row["fpts_above_adp"] for row in rows), 1) if rows else None,
+        "avg_fpts_above_adp": round(mean(margins), 1) if margins else None,
+        "median_adp_slots_gained_ranked": round(median(slots), 1) if slots else None,
+        "median_fpts_above_adp": round(median(margins), 1) if margins else None,
+        "trimmed_avg_fpts_above_adp": round(mean(trimmed), 1) if trimmed else None,
+        "trimmed_players_per_tail": trim_per_tail,
+        "players_10_games_or_fewer": len(low_games),
+        "fpts_contribution_10_games_or_fewer": round(sum(low_games) / len(rows), 1) if rows else None,
+        "avg_fpts_above_adp_over_10_games": round(mean(other_games), 1) if other_games else None,
     }
 
 
 def format_value_metrics(metrics):
-    result = f"{metrics['avg_fpts_above_adp']:+.1f} avg FPTS vs ADP"
+    result = f"{metrics['avg_fpts_above_adp']:+.1f} avg FPTS vs ADP, {metrics['median_fpts_above_adp']:+.1f} median"
+    if metrics["trimmed_players_per_tail"]:
+        result += f", {metrics['trimmed_avg_fpts_above_adp']:+.1f} trimmed avg"
+    if metrics["players_10_games_or_fewer"]:
+        count = metrics["players_10_games_or_fewer"]
+        contribution = metrics["fpts_contribution_10_games_or_fewer"]
+        result += f", 0-10 games: {count} ({contribution:+.1f} FPTS per pick)"
     if metrics["ranked_players"]:
         result += f", {metrics['avg_adp_slots_gained_ranked']:+.1f} avg slots ({metrics['ranked_players']} ranked)"
     return result
