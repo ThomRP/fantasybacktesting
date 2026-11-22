@@ -1,11 +1,10 @@
 """Pre-draft workload features from the previous NBA regular season."""
 
 import json
-import math
 from collections import defaultdict
 from dataclasses import dataclass
 
-from backtest_common import fantasy_points, read_csv, regular_season_game
+from backtest_common import fantasy_points, parse_minutes, read_csv, regular_season_game
 
 OPPORTUNITY_FEATURES = (
     "prior_mpg",
@@ -22,21 +21,6 @@ class Appearance:
     fpts: int | None
     attempts: int | None
     started: float | None
-
-
-def parse_minutes(raw):
-    # Archived exports use both decimal minutes and minutes:seconds.
-    try:
-        if isinstance(raw, str) and ":" in raw:
-            minutes, seconds = (int(part) for part in raw.split(":", 1))
-            if minutes < 0 or not 0 <= seconds < 60:
-                return None
-            value = minutes + seconds / 60
-        else:
-            value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) and value >= 0 else None
 
 
 def appearance(stats, starter):

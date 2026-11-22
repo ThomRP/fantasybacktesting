@@ -29,6 +29,7 @@ SCORING = {
     "turnovers": -2,
     "points": 1,
 }
+BOX_SCORE_STATS = (*SCORING, "three_point_field_goals_attempted", "minutes")
 ADP_COLUMNS = ("avg", "average", "adp", "averagedraftposition", "consensusadp", "consensus")
 NBA_TEAM_IDS = {str(team) for team in range(1, 31)}
 
@@ -51,6 +52,7 @@ class PlayerSeason:
     positions: Counter[str] = field(default_factory=Counter)
     starts: int = 0
     games_without_start_status: int = 0
+    box_score_totals: dict[str, float | None] = field(default_factory=dict)
 
     @property
     def total_points(self):
@@ -63,6 +65,21 @@ class PlayerSeason:
 
 def fantasy_points(stats):
     return sum(int(stats[column]) * weight for column, weight in SCORING.items())
+
+
+def parse_minutes(raw):
+    # Archived exports use both decimal minutes and minutes:seconds.
+    try:
+        if isinstance(raw, str) and ":" in raw:
+            minutes, seconds = (int(part) for part in raw.split(":", 1))
+            if minutes < 0 or not 0 <= seconds < 60:
+                return None
+            value = minutes + seconds / 60
+        else:
+            value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 def read_csv(path):
@@ -85,7 +102,7 @@ def regular_season_game(game):
     )
 
 
-def archived_lines(path):
+def archived_box_scores(path):
     """Read player lines from original ESPN JSON saved for a missing CSV game."""
     with path.open(encoding="utf-8") as source:
         game = json.load(source)
@@ -103,13 +120,13 @@ def archived_lines(path):
                     "freeThrowsMade-freeThrowsAttempted"
                 ].split("-")
                 threes = stats["threePointFieldGoalsMade-threePointFieldGoalsAttempted"]
-                stats["three_point_field_goals_made"] = threes.split("-")[0]
+                stats["three_point_field_goals_made"], _, stats["three_point_field_goals_attempted"] = threes.partition("-")
                 athlete = player["athlete"]
                 position = (athlete.get("position") or {}).get("abbreviation")
-                yield str(athlete["id"]), athlete["displayName"], fantasy_points(stats), position, player.get("starter"), team_id
+                yield str(athlete["id"]), athlete["displayName"], stats, position, player.get("starter"), team_id
 
 
-def player_lines(folder, game_dates):
+def player_box_scores(folder, game_dates):
     covered_games = set()
     for row in read_csv(folder / "player_box_scores.csv"):
         game_id = row["game_id"]
@@ -117,23 +134,28 @@ def player_lines(folder, game_dates):
             continue
         covered_games.add(game_id)
         yield (
-            game_id, row["athlete_id"], row["athlete_display_name"], fantasy_points(row),
+            game_id, row["athlete_id"], row["athlete_display_name"], row,
             row.get("athlete_position_abbreviation"), row.get("starter"), row.get("team_id"),
         )
 
     for game_id in sorted(game_dates.keys() - covered_games):
         path = folder / "game_json" / f"{game_id}.json"
         if path.is_file():
-            for athlete_id, name, points, position, starter, team_id in archived_lines(path):
+            for athlete_id, name, stats, position, starter, team_id in archived_box_scores(path):
                 covered_games.add(game_id)
-                yield game_id, athlete_id, name, points, position, starter, team_id
+                yield game_id, athlete_id, name, stats, position, starter, team_id
 
     missing = game_dates.keys() - covered_games
     if missing:
         print(f"{folder.name}: missing player box scores for regular-season games {', '.join(sorted(missing))}")
 
 
-def read_season(folder, *, split_at_all_star=True):
+def player_lines(folder, game_dates):
+    for game_id, athlete_id, name, stats, position, starter, team_id in player_box_scores(folder, game_dates):
+        yield game_id, athlete_id, name, fantasy_points(stats), position, starter, team_id
+
+
+def read_season(folder, *, split_at_all_star=True, include_box_scores=False):
     schedule = list(read_csv(folder / "games.csv"))
     if not any(g["season_type"] == "3" and g["status_type_completed"].lower() == "true" for g in schedule):
         print(f"Skipping {folder.name}: the schedule has no completed playoff game to confirm the regular season ended")
@@ -149,9 +171,19 @@ def read_season(folder, *, split_at_all_star=True):
 
     game_dates = {g["game_id"]: g["game_date"] for g in schedule if regular_season_game(g)}
     players = defaultdict(PlayerSeason)
-    for game_id, athlete_id, name, points, position, starter, _ in player_lines(folder, game_dates):
+    for game_id, athlete_id, name, stats, position, starter, _ in player_box_scores(folder, game_dates):
         player = players[athlete_id]
         player.names.add(name)
+        points = fantasy_points(stats)
+        if include_box_scores:
+            for stat in BOX_SCORE_STATS:
+                raw = stats.get(stat)
+                if stat == "minutes":
+                    value = parse_minutes(raw)
+                else:
+                    value = int(raw) if raw not in (None, "", "--") else None
+                total = player.box_score_totals.get(stat, 0.0)
+                player.box_score_totals[stat] = total + value if total is not None and value is not None else None
         if position:
             player.positions[position] += 1
         start_status = str(starter).strip().lower()
@@ -367,19 +399,19 @@ def compare_seasons(prior, following, prior_players, following_players, backtest
     return results
 
 
-def season_pairs(data, *, split_at_all_star=True):
+def season_pairs(data, *, split_at_all_star=True, include_box_scores=False, require_adp=True):
     seasons = {int(p.name[:4]): p for p in data.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}", p.name)}
     stats = {}
     for year, prior in sorted(seasons.items()):
         following = seasons.get(year + 1)
         if following is None:
             continue
-        if not (following / "adp.csv").is_file():
+        if require_adp and not (following / "adp.csv").is_file():
             print(f"Skipping {prior.name} to {following.name}: missing {following.name}/adp.csv")
             continue
         for folder in (prior, following):
             if folder not in stats:
-                stats[folder] = read_season(folder, split_at_all_star=split_at_all_star)
+                stats[folder] = read_season(folder, split_at_all_star=split_at_all_star, include_box_scores=include_box_scores)
         if stats[prior] is None or stats[following] is None:
             continue
         yield year, prior, following, stats[prior], stats[following]

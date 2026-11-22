@@ -281,6 +281,26 @@ Generate the earlier fold scores with `backtest_value.py --save-cv-results`. Eac
 
 To test actual draft-time availability, add `--availability data/draft_availability.csv`. The CSV needs `draft_season,athlete_id,reported_at,draft_at,status`. Use ISO 8601 timestamps with offsets such as `2024-10-17T13:00:00-04:00`, and enter the actual draft time as the cutoff. Mark a known sustained absence `out` and a documented clearance `available`. The latest status at or before the supplied cutoff is used. Players with unknown status stay eligible. The summary reports how many candidates had a dated status. This comparison uses the dated screen on its own alongside the games-played proxy.
 
+## Forecasting next-season fantasy points per game
+
+`backtest_fppg.py` predicts actual next-season regular-season FPPG. It compares carrying last year's FPPG forward, a ridge model using prior FPPG, games and minutes, and the same ridge model with per-game points, rebounds, assists, steals, blocks, turnovers, and made and attempted field goals, threes and free throws.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_fppg.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_fppg.py
+```
+
+Each fold trains on earlier season pairs with box scores. The latest two complete seasons are held out by default. ADP is used only for a secondary draft check. Where ADP is available, each method picks the two highest FPPG projections among players with `50 < ADP <= 75` per draft.
+
+`data/backtest_fppg_summary.csv` reports forecast errors (MAE and RMSE), players with no appearances, and the draft check. `data/backtest_fppg_predictions.csv` includes the prior-season inputs, projections, and outcomes. Players with zero games keep their forecasts and are omitted from forecast error averages.
+
 ## Draft value beyond hit rate
 
 The backtests report hit rate alongside two measures of how large the gains and losses were.
