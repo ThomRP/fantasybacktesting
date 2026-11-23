@@ -319,6 +319,28 @@ Each fold trains on earlier season pairs with box scores. The latest two complet
 
 Generate the forecasts first with `backtest_fppg.py`. The comparison also includes `logistic_base` in drafts where the existing `backtest_value_results.csv` or `backtest_value_cv_results.csv` covers the same candidates and ADPs. Generate both score files with `backtest_value.py --save-cv-results`. The script writes `data/backtest_top_three_summary.csv` and `data/backtest_top_three_picks.csv`, with results for the whole shortlist and for the added third pick.
 
+### Backtest a top-150 draft board
+
+`backtest_draft_board.py` builds 150-player boards from the first 175 market prospects ordered by ADP. It reorders players within market slots 1–25, 26–50, 51–75, 76–100, 101–125, and 126–175. The last group competes for the final 25 board positions. Rookies and other players without a forecast keep their market positions.
+
+**Windows (PowerShell)**
+
+```powershell
+.\.venv\Scripts\python.exe backtest_draft_board.py
+```
+
+**macOS and Linux**
+
+```sh
+.venv/bin/python backtest_draft_board.py
+```
+
+The script uses the saved `backtest_fppg.py` forecasts and the original ADP files. It compares market order, the direct FPPG forecast, and the price-adjusted box-score forecast. It also compares logistic and value scores when the `backtest_value.py --save-cv-results` exports cover the scored candidates in every draft. Use unrestricted ADP when generating those exports.
+
+The uniform board chooses one rule for every band. The band-specific board chooses a rule separately in each band. Both choices use the average FPPG above ADP of the first five players in each band in earlier drafts, among picks with an outcome. The most recent two drafts are held out by default. Use `--holdout-seasons 1` when you have only two usable drafts.
+
+`data/backtest_draft_board_rankings.csv` contains each 150-player board, with market rank, board rank, and each band's rule. The summary in `data/backtest_draft_board_summary.csv` shows league-wide top-150 finishers captured, mean absolute rank error, late entrants into the board, and the performance of the five targets in each band. League-wide finish rank uses actual regular-season FPPG.
+
 ## Draft value beyond hit rate
 
 The backtests report hit rate alongside two measures of how large the gains and losses were.
