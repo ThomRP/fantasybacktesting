@@ -1,378 +1,134 @@
-# Fantasy basketball data downloader
+# Fantasy Basketball Draft Engine (`fantasybacktesting`)
 
-Download historical FantasyPros average draft position (ADP) and ESPN NBA game data for the same season. The files are inputs for backtesting how players performed relative to where they were drafted.
+A walk-forward, leak-free fantasy basketball draft projection engine, 12-team ESPN points-league draft simulator, and interactive multi-season replay dashboard. Built to harvest repeatable draft-day edges over consensus ADP (and generate standalone pre-ADP boards before fantasy drafts open) across any custom points-league scoring system.
 
-## Install and run
+---
 
-Use Python 3.10 or later and run the commands from the repository root. Set up the virtual environment once, then choose a download command for your OS.
+## Core Design Philosophy
+
+1. **Pre-Draft & Draft-Day Edge Only:** Focuses exclusively on walking out of the draft room with systematically underpriced, durable production rather than chasing noisy mid-season waiver/streaming variance.
+2. **Honest Evaluation (Zero Survivorship Bias):** Every drafted player is graded on **Availability-Adjusted FPPG (`AdjFPPG`)** on a 65-game scale with 0-game injury busts included at replacement waiver value rather than dropped.
+3. **Objective Roster Guardrails Only:** Enforces ESPN's **4-Center cap** (primary-listed `C`) and legal 10-starter (`PG, SG, SF, PF, C, G, F, 3×UTIL`) + 3-bench rosters. Intentionally omits subjective positional VORP.
+4. **Two-Stage Workflow:**
+   * **Stage 1 (`--mode pure_stats`, June–August, 0% ADP):** Projects ~350–400 NBA players completely independent of ADP using Year 0 / Year −1 box scores, shrunk 3P%, age/usage interactions, NBA draft pick, and team context (`37.5% Huber + 37.5% Structural MPG×FPPM×Avail + 25% shallow L1 GBDT`), paired with live ESPN injury return-date caps (`--use-live-injuries`).
+   * **Stage 2 (`--mode residual`, September–October, Draft Season):** Switches to the ADP-anchored residual ensemble (`37.5% Huber + 37.5% Structural Decomposition + 25% shallow L1 GBDT` for veterans + 11-feature Rookie Hype-Tax Huber + Empirical-Bayes returning-absence drag), with a scale-invariant market-collapse injury hinge, a late-round sleeper ramp ($\lambda = 0.50 \to 0.85$ over ADP `100–150`), and an ADP-aware 2-pick **Reach-vs.-Wait** optimizer (`residual_wait`, $\lambda = 0.85$).
+
+---
+
+## Target Metric (`AdjFPPG`)
+
+For a regular season under the active scoring system, let $\text{FPPG}_{150}$ be the 150th-ranked player's raw FPPG ($\ge 20$ games played), and define replacement waiver value as $\text{waiver} = 0.85 \cdot \text{FPPG}_{150}$. For any player with $g$ regular-season games played and average $\text{raw\_FPPG}$:
+
+$$\text{AdjFPPG} = \frac{\min(g, 65) \cdot \text{raw\_FPPG} + (65 - \min(g, 65)) \cdot \text{waiver}}{65}$$
+
+Players who miss the entire season ($g = 0$) score $\text{waiver}$ rather than being excluded.
+
+---
+
+## Repository Structure
+
+### Production Engine & Interactive Dashboard
+* **`draft_engine.py`** — Unified Stage-1 (`pure_stats`) and Stage-2 (`residual` + `residual_wait`) engine, custom scoring presets (`default`, `espn`, `yahoo`, `sleeper`, JSON file/dict), live ESPN injury API integration (`--use-live-injuries`, `--as-of-date`), and 12-team ESPN daily active-lineup backtest simulator (`--backtest`).
+* **`build_board_page.py`** — Generates **`board_2026_27.html`**, a self-contained dark-mode interactive dashboard covering all **9 out-of-sample seasons** (6 CV folds `2018–19`–`2023–24`, 2 untouched Holdouts `2024–25`–`2025–26`, and Live `2026–27`) with a **4 games/sec real-time game-by-game replay slider** and live SVG edge chart.
+* **`board_2026_27.html`** — Ready-to-open offline HTML dashboard (double-click to view in any browser).
+
+### Data, Utilities & Tests
+* **`download.py`** — Downloads FantasyPros historical ADP (`adp.csv`) and ESPN/SportsDataverse schedules and box scores (`games.csv`, `player_box_scores.csv`, `team_box_scores.csv`).
+* **`backtest_common.py`** — Shared box-score parser, default scoring constants, ESPN `player_core` DOB/profile loader, and CSV helpers. *(Note: `experience_years` in `player_core` reflects current career totals and is strictly excluded to prevent survivorship leakage.)*
+* **`adp_names.py`** — FantasyPros player name normalization.
+* **`backtest_rookies.py`** & **`backtest_rookie_plots.py`** — Career appearance archive loader (back to 1993–94) for leak-free rookie identification.
+* **`backtest_full_pool.py`** & **`compare_early_season.py`** — Full-pool helpers and proportional in-progress season leaderboard evaluator.
+* **`test_injury_cap.py`** & **`test_reach_or_wait.py`** — Unit test suites for pre-season/mid-season injury availability capping and 2-pick reach-vs.-wait survival EV.
+
+---
+
+## Setup & Data Download
+
+Use Python 3.10+ from the repository root.
 
 ### Windows (PowerShell)
-
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
 
-```powershell
-# FantasyPros year=2019 if the page is for the 2019–20 draft
-.\.venv\Scripts\python.exe download.py 2019 --adp-year-is start
-
-# FantasyPros year=2019 if the page is for the 2018–19 draft
-.\.venv\Scripts\python.exe download.py 2018 --adp-year-is end
-
-# FantasyPros years 2015 through 2025 if the page uses the start year
+# Download completed historical seasons (2015-16 through 2025-26)
 .\.venv\Scripts\python.exe download.py 2015 2025 --adp-year-is start
 
-# 2018–19 game data with play-by-play
-.\.venv\Scripts\python.exe download.py 2018 --games-only --play-by-play
+# Download current/upcoming season (2026-27)
+.\.venv\Scripts\python.exe download.py 2026 --adp-year-is start
 ```
 
-### macOS and Linux
-
+### macOS / Linux
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-```
-
-```sh
-# FantasyPros year=2019 if the page is for the 2019–20 draft
-.venv/bin/python download.py 2019 --adp-year-is start
-
-# FantasyPros year=2019 if the page is for the 2018–19 draft
-.venv/bin/python download.py 2018 --adp-year-is end
-
-# FantasyPros years 2015 through 2025 if the page uses the start year
 .venv/bin/python download.py 2015 2025 --adp-year-is start
-
-# 2018–19 game data with play-by-play
-.venv/bin/python download.py 2018 --games-only --play-by-play
+.venv/bin/python download.py 2026 --adp-year-is start
 ```
 
-## Download options
+---
 
-The positional year is the **start of the NBA season**. Add a second starting year to download an inclusive range. Check the season label on the FantasyPros page and use `--adp-year-is start` or `--adp-year-is end` to match its `year` parameter.
+## Usage
 
-Each season needs a populated ADP table before the downloader requests its game files. Use `--games-only` to skip the ADP lookup. Add `--play-by-play` for event-level data, which can add several hundred MB per season. The downloader reports failures by season and exits with a nonzero status if any season fails.
-
-## All-Star break backtests
-
-Run the backtest from the repository root after downloading consecutive completed seasons. If you downloaded to a different folder, pass its path with `--data`.
-
-### Post-break surge
-
-**Windows (PowerShell)**
-
+### 1. Run Walk-Forward Backtest & 12-Team ESPN Draft Simulation
 ```powershell
-.\.venv\Scripts\python.exe backtest.py
+# Default / ESPN scoring (1,152 simulated 12-team snake drafts per strategy)
+.\.venv\Scripts\python.exe draft_engine.py --backtest --scoring default --seed 42
+
+# Yahoo or Sleeper scoring (or custom JSON file / inline dict)
+.\.venv\Scripts\python.exe draft_engine.py --backtest --scoring yahoo --seed 42
+.\.venv\Scripts\python.exe draft_engine.py --backtest --scoring sleeper --seed 42
 ```
 
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest.py
-```
-
-Both backtests apply the league scoring in `backtest_common.py` to games that count in the regular-season standings. A player qualifies with at least one game on each side of the All-Star break and positive pre-break fantasy points per game. In `backtest.py`, a rise of 10% or more flags a surge.
-
-In the following season, players beat ADP if their rank by total regular-season fantasy points is better than their average draft pick. A matched player who misses the entire season counts as a miss. The script prints how many ADP entries it matches to unique ESPN players and compares hit rates for surging players and other eligible players. Find the individual results in `data/backtest_results.csv`.
-
-#### Ages 23–29
-
-**Windows (PowerShell)**
-
+### 2. Generate Pre-Draft & Draft-Day Boards
 ```powershell
-.\.venv\Scripts\python.exe backtest.py --ages 23 29
+# Stage 1 (June–August, 0% ADP + live ESPN injury caps)
+.\.venv\Scripts\python.exe draft_engine.py --generate-board 2026-27 --mode pure_stats --use-live-injuries --scoring default
+
+# Stage 2 (September–October, ADP-anchored champion + live ESPN injury caps)
+.\.venv\Scripts\python.exe draft_engine.py --generate-board 2026-27 --mode residual --lam 0.50 --use-live-injuries --scoring default
 ```
+* Supports `--rookies-csv`, `--injuries-csv`, `--exclude-players`, `--opening-night YYYY-MM-DD`, and `--as-of-date YYYY-MM-DD`.
 
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest.py --ages 23 29
-```
-
-The age range applies to both groups. Age is measured on the All-Star date of the season before the draft being tested, and next-season ranks still use the full NBA player pool. The first run fetches ESPN birth dates and caches them under `data/player_core/`. It reports missing birth dates and saves results with `age_at_break` to `data/backtest_results_ages_23_29.csv`. [ESPN player data archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_core)
-
-### Post-break decline
-
-This backtest compares next-season ADP hit rates for players whose fantasy points per game fell by at least 10% after the All-Star break and other eligible players.
-
-**Windows (PowerShell)**
-
+### 3. Build the Interactive Multi-Season Replay Webpage
 ```powershell
-.\.venv\Scripts\python.exe backtest_decline.py
+.\.venv\Scripts\python.exe build_board_page.py
+start board_2026_27.html
 ```
 
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_decline.py
-```
-
-Results go to `data/backtest_decline_results.csv`. Add `--ages 23 29` to either command for the age-restricted run, which saves to `data/backtest_decline_results_ages_23_29.csv`.
-
-## Second-year players
-
-The rookie season is the first season a player appeared in a regular-season NBA game. The test compares their ADP in the immediately following season with their league-wide rank by regular-season fantasy points per game (FPPG). Every player with at least one appearance is eligible for the ranking, and `next_games` shows the sample size. Players with zero appearances are reported as unranked and are excluded from the per-game hit rate and value averages.
-
-**Windows (PowerShell)**
-
+### 4. Run Unit Tests
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe backtest_rookies.py
+.\.venv\Scripts\python.exe -m unittest -v test_injury_cap.py test_reach_or_wait.py
 ```
 
-**macOS and Linux**
+---
 
-```sh
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python backtest_rookies.py
-```
+## Verified Walk-Forward Backtest Results
 
-Results go to `data/backtest_rookie_results.csv`. The `second_year` column identifies players in the rookie cohort. On the first run, the script fetches ESPN regular-season appearance history back to 1993–94 and caches player IDs in `data/player_history/`. [ESPN season statistics archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_season_stats)
+Same model architecture across all seasons, refit chronologically using only prior seasons (`2018–19` trained strictly on `2016–17`–`2017–18`; `2024–25` & `2025–26` held out completely untouched from development; `2026–27` evaluated zero-leakage). Evaluated via **1,152 simulated 12-team × 13-round ESPN snake drafts/strategy** (`draft_engine.py --backtest --seed 42`, R1 straight ADP, R2–13 $\text{Uniform}[-2, +2]$, exact daily 10-starter + 3-bench scoring, 4-C primary cap):
 
-### Opener and majority starters
+### Default / ESPN Points Scoring
 
-This group includes sophomores who started their team's first regular-season game and started **more than half** of their own regular-season appearances. Find their aggregate results in the `opener_majority` row of `data/backtest_rookie_summary.csv` and individual results in `data/backtest_rookie_opener_majority.csv`.
+| Strategy | All 8 Yrs Diff | Lift % | Untouched Holdout Diff | Avg Rank (All / HO) | Win % (All / HO) | Top-4 % (All / HO) | 0g Busts (H / F) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `market` (strict ADP) | +77.2 | +0.31% | -198.9 | 6.42 / 6.73 | 8.9% / 6.6% | 34.3% / 29.5% | 0.19 / 0.20 |
+| `pure_stats` (0% ADP, blind) | -4,410.3 | -17.25% | -6,782.8 | 11.21 / 11.67 | 0.0% / 0.0% | 0.0% / 0.0% | 1.39 / 0.09 |
+| `pure_stats_news_cut` (Stage 1 + collapse cut) | +758.5 | +3.01% | -1,647.0 *(+1,560 CV)* | 5.40 / 8.23 | 22.8% / 0.7% | 44.4% / 17.7% | 0.16 / 0.20 |
+| `blend_adp_50` (50/50 Stage 1 + ADP) | +1,156.1 | +4.60% | -183.7 *(+1,603 CV)* | 4.81 / 6.70 | 19.8% / 3.1% | 53.0% / 32.3% | 0.18 / 0.20 |
+| **`residual_unified`** (greedy, $\lambda = 0.50 \to 0.85$ ramp) | **+1,725.8** | **+6.88%** | **+1,885.1 (+7.47%)** | **4.29 / 4.23** | **28.0% / 29.2%** | **60.3% / 60.4%** | **0.03 / 0.21** *(0.00 HO)* |
+| **`residual_wait`** (reach-vs.-wait, $\lambda = 0.85$) | **+2,000.9** | **+7.99%** | **+2,532.7 (+10.06%)** | **4.01 / 3.70** | **29.7% / 37.2%** | **63.5% / 67.7%** | **0.02 / 0.21** *(0.00 HO)* |
 
-Open `data/backtest_rookie_opener_majority.pdf` for three plots covering all qualifying players, those who beat ADP, and those who tied or missed ADP. Each plot shows slots gained or lost by FPPG rank, with each player's ADP, starts, games played, actual FPPG, and FPPG versus ADP.
+* **8-for-8 winning seasons** for `residual_wait` under Default scoring, with Holdout Top-150 capture **`241/300`** and Rank MAE **`43.92`** (vs. Market `237/300` and `50.54`).
 
-### Other breakdowns
+### Yahoo Scoring Cross-Check (`--scoring yahoo --seed 42`)
 
-The test also prints how many second-year players beat ADP by lineup role, rookie position, and exact listed height. `data/backtest_rookie_summary.csv` contains the overall rate and each breakdown with player counts.
+| Strategy | All 8 Yrs Diff | Lift % | Untouched Holdout Diff | Avg Rank (All / HO) | Win % (All / HO) | Top-4 % (All / HO) | Holdout Top-150 (Rank MAE) |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `residual_unified` | **+2,161.1** | **+8.81%** | **+2,216.1 (+9.06%)** | 3.64 / 3.74 | 31.8% / 24.3% | 68.9% / 68.4% | **250/300** (39.86 vs. 49.35 Mkt) |
+| **`residual_wait`** | **+2,467.1** | **+10.07%** | **+2,426.7 (+9.93%)** | **3.39 / 3.52** | **36.6% / 29.5%** | **72.3% / 69.4%** | **250/300** (**38.41** vs. 49.35 Mkt) |
 
-A regular starter started at least half of their second-year regular-season appearances. The test compares them with players who started fewer than half and reports players with no appearances or incomplete starter flags separately. The player-level CSV includes `next_starts`, `next_start_pct`, and `next_lineup_role`.
-
-The `opening_lineup` rows compare all sophomores who started their NBA team's first regular-season game with the other sophomores. This includes opening starters who later lost their starting role. `opening_lineup_among_regular_starters` splits the season-long regular starters by the same opener status. Each row includes average ADP. Filter the player-level CSV by `second_year`, `next_lineup_role`, and `next_opener_role` to inspect the individual picks. The CSV records the team, game ID, and date for verified opener starts. A missing team lineup can leave a role `Unknown`.
-
-The opener is an observed lineup. For a strategy used before opening night, use starter projections dated before the fantasy draft to select players.
-
-The player-level CSV also includes `rookie_position` and `height_inches`. Position comes from the most frequent listing in the player's rookie regular-season box scores, with their ESPN profile as a fallback. Broad listings such as `G` and `F` are reported as given. Heights come from ESPN's listed profiles. Missing values appear in an `Unknown` group and count toward the overall rate. [ESPN player data archive](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/espn_nba_player_core)
-
-## Player profiles with K-means and PCA
-
-This backtest groups drafted players who appeared in the prior regular season. It uses ADP, age at the prior All-Star break, games played, fantasy points per game, the post-break change in fantasy points per game, and start percentage. All game features come from the prior regular season.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe backtest_clusters.py
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python backtest_clusters.py
-```
-
-The script learns four profiles from earlier drafts and checks their ADP hit rates in the latest two completed drafts. It fits feature scaling, missing-value medians, K-means, and PCA using the earlier drafts. The holdout evaluation compares ADP with league-wide regular-season FPPG rank. Players with zero games are reported as unranked and excluded from the hit rates and value averages. You can change the split or profile count with `--holdout-seasons` and `--clusters`.
-
-- `data/backtest_cluster_summary.csv` shows each profile's training center, holdout and ranked sample sizes, average ADP, hit rate, and FPPG margin alongside the overall holdout results.
-- `data/backtest_cluster_results.csv` has the held-out player records, profile assignments, and FPPG finishes.
-- `data/backtest_cluster_pca.csv` shows which features contribute to the first two components and how much input variation each component explains. The held-out hit rates measure associations with beating ADP.
-
-## Predicting who beats ADP
-
-`backtest_models.py` compares an ADP-only logistic model, logistic regression using all six pre-draft features, and shallow gradient-boosted trees. It uses expanding draft-season folds. Each fold tunes on earlier drafts by average precision, then tests on the next draft. The latest two drafts are held out from this process for final evaluation by default.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe backtest_models.py
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_models.py
-```
-
-Each model selects its top 25% of available picks in each evaluation draft. Use `--top-pct` to choose how selective the rule is, `--holdout-seasons` to set the final evaluation window, and `--cv-folds` to set the maximum number of chronological folds for both evaluation and tuning (default five). Players with zero appearances can still be selected and appear in the unranked count. Hit rates and average FPPG margins use ranked players.
-
-Logistic regression tests stronger regularization and quadratic terms with pairwise feature interactions. Boosted trees test depth, minimum leaf size, and L2 regularization. Compare whether the models improve on ADP-only across individual folds and in the final holdout.
-
-- `data/backtest_model_summary.csv` compares selected picks with the overall holdout rate and the equally selective ADP-only rule. It also has FPPG margins, whole-holdout average precision and ROC AUC, and the selected validation parameters.
-- `data/backtest_model_results.csv` lists each holdout pick's model scores, selection flags, and FPPG outcome.
-- `data/backtest_model_cv.csv` shows out-of-sample results and chosen parameters for each earlier evaluation draft, including the dates used for its fit and tuning.
-- `data/backtest_model_parameter_search.csv` shows the mean and standard deviation of average precision for every candidate parameter set considered before the final holdout.
-
-## Finding FPPG value at the same draft price
-
-`backtest_value.py` tests two changes independently. It adds prior-season minutes, changes in minutes and start rate after the All-Star break, and fantasy scoring and shot attempts per 36 minutes. It also compares the regularized quadratic logistic model with ridge regression that predicts the actual FPPG margin above ADP. Each model runs with both feature sets, using fixed settings and chronological splits.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe backtest_value.py
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_value.py
-```
-
-Each model selects the top 25% per evaluation draft by default. Use `--top-pct` to set the selection size and `--min-adp` or `--max-adp` to restrict the eligible draft range. These ADP filters apply to selection and evaluation. For example, `--max-adp 156` tests only the first 156 draft slots. `--cv-folds` and `--holdout-seasons` set the number of earlier evaluation folds and final holdout drafts.
-
-- `data/backtest_value_summary.csv` compares final holdout hit rates and FPPG margins with the full eligible pool and with a benchmark that matches the model's pick counts by season and 25-slot ADP band.
-- `data/backtest_value_cv.csv` shows the same metrics for each earlier chronological fold.
-- `data/backtest_value_results.csv` lists holdout features, scores, selection flags, and outcomes. Logistic scores rank players by hit probability and value scores rank players by predicted FPPG margin.
-
-### Audit picks that finished 50th–150th
-
-This retrospective audit keeps each model's saved selection flags and evaluates the players who finished 50th–150th by league-wide FPPG rank, inclusive. ADP 110 and finish rank 90 is a 20-slot win. Run it after generating `data/backtest_value_results.csv`.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe backtest_rank_band.py
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_rank_band.py
-```
-
-The script saves `data/backtest_value_rank_band_summary.csv` and `data/backtest_value_rank_band_picks.csv`. The summary shows original selection counts, retained picks, hit rates, and same-price comparisons within the finish band, split by draft season and 25-slot ADP bands. The `adp_in_finish_band` rows require ADP above 50 and at most 150. The other picks have outcomes determined by the finish filter alone, with automatic misses at ADP 50 or earlier and automatic wins after ADP 150.
-
-Use `--results data/backtest_model_results.csv` to audit the supervised model run and `--min-rank` / `--max-rank` to change the finish range.
-
-### Compare models within draft-day ADP bands
-
-Run `backtest_adp_bands.py` after generating `data/backtest_value_results.csv` with the default unrestricted ADP range. It sorts candidates by their saved model scores within each draft and ADP band. Each model takes the same number of picks, defaulting to the top 25% rounded up. Every selection stays in the report. Players without a finish rank count as unranked and are excluded from the FPPG and hit-rate averages.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe backtest_adp_bands.py
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_adp_bands.py
-```
-
-The default bands have upper ADP limits of 25, 50, 75, 100, 125, and 150, with a final band above 150. Each boundary belongs to the lower band. Try `--band-ends 24 48 72 96 120 144` to group pairs of rounds in a 12-team league. Use `--top-pct 10` to test a shorter target list.
-
-The script writes `data/backtest_value_adp_band_summary.csv` and `data/backtest_value_adp_band_picks.csv`. The summary shows FPPG and hit-rate lift against the same season and 25-slot ADP mix. It also counts top-50 and top-100 finishes, losses of at least 25 slots, and unranked picks. Use `backtest_value.py --save-cv-results` and then `backtest_adp_bands.py --results data/backtest_value_cv_results.csv` to compare these bands over the earlier chronological folds. You can also use `--results data/backtest_model_results.csv` for the supervised models.
-
-### Test a short target list and an availability screen
-
-`backtest_draft_targets.py` reads the full player-level scores from `backtest_value.py`. For ADP above 50 through 75, compare `top_two` (the two highest `logistic_base` scores per draft) with `prior_fppg_top_two` (the two highest prior regular-season FPPG averages in the same candidate pool). Both use the same pick count, outcomes, and same-price benchmark. The wider logistic top quarter is also reported. For ADP above 125 through 150, the script compares the `value_base` top quarter with a screen that requires at least 50 prior regular-season games. The games threshold is a proxy for availability. Change it with `--min-prior-games`.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe backtest_draft_targets.py
-.\.venv\Scripts\python.exe backtest_draft_targets.py --results data/backtest_value_cv_results.csv
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_draft_targets.py
-.venv/bin/python backtest_draft_targets.py --results data/backtest_value_cv_results.csv
-```
-
-Generate the earlier fold scores with `backtest_value.py --save-cv-results`. Each screen fills the original top-quarter quota from the highest-scoring eligible players in that draft and ADP band. The summary counts replacements, unfilled targets, zero-game outcomes, and 1–10-game outcomes. It includes both hit rate among ranked players and wins per target, which counts unranked and unfilled targets in the denominator. The summary and picks CSVs use the suffixes `_draft_targets_summary.csv` and `_draft_targets_picks.csv`.
-
-To test actual draft-time availability, add `--availability data/draft_availability.csv`. The CSV needs `draft_season,athlete_id,reported_at,draft_at,status`. Use ISO 8601 timestamps with offsets such as `2024-10-17T13:00:00-04:00`, and enter the actual draft time as the cutoff. Mark a known sustained absence `out` and a documented clearance `available`. The latest status at or before the supplied cutoff is used. Players with unknown status stay eligible. The summary reports how many candidates had a dated status. This comparison uses the dated screen on its own alongside the games-played proxy.
-
-## Forecasting next-season fantasy points per game
-
-`backtest_fppg.py` predicts actual next-season regular-season FPPG. It compares carrying last year's FPPG forward, a ridge model using prior FPPG, games and minutes, and the same ridge model with per-game points, rebounds, assists, steals, blocks, turnovers, and made and attempted field goals, threes and free throws.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe backtest_fppg.py
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_fppg.py
-```
-
-Each fold trains on earlier season pairs with box scores. The latest two complete seasons are held out by default. ADP is used only for a secondary draft check. Where ADP is available, each method picks the two highest FPPG projections among players with `50 < ADP <= 75` per draft.
-
-`data/backtest_fppg_summary.csv` reports forecast errors (MAE and RMSE), players with no appearances, and the draft check. `data/backtest_fppg_predictions.csv` includes the prior-season inputs, projections, and outcomes. Players with zero games keep their forecasts and are omitted from forecast error averages.
-
-### Compare top-three draft shortlists
-
-`backtest_top_three.py` reads the saved FPPG forecasts and takes three picks per draft from `50 < ADP <= 75`. It compares the raw forecasts with forecasts minus the prior season's league-wide FPPG at each player's exact ADP slot. That draft-price benchmark uses the preceding season, with interpolation for fractional ADPs.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe backtest_top_three.py
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_top_three.py
-```
-
-Generate the forecasts first with `backtest_fppg.py`. The comparison also includes `logistic_base` in drafts where the existing `backtest_value_results.csv` or `backtest_value_cv_results.csv` covers the same candidates and ADPs. Generate both score files with `backtest_value.py --save-cv-results`. The script writes `data/backtest_top_three_summary.csv` and `data/backtest_top_three_picks.csv`, with results for the whole shortlist and for the added third pick.
-
-### Backtest a top-150 draft board
-
-`backtest_draft_board.py` builds 150-player boards from the first 175 market prospects ordered by ADP. It reorders players within market slots 1–25, 26–50, 51–75, 76–100, 101–125, and 126–175. The last group competes for the final 25 board positions. Rookies and other players without a forecast keep their market positions.
-
-**Windows (PowerShell)**
-
-```powershell
-.\.venv\Scripts\python.exe backtest_draft_board.py
-```
-
-**macOS and Linux**
-
-```sh
-.venv/bin/python backtest_draft_board.py
-```
-
-The script uses the saved `backtest_fppg.py` forecasts and the original ADP files. It compares market order, the direct FPPG forecast, and the price-adjusted box-score forecast. It also compares logistic and value scores when the `backtest_value.py --save-cv-results` exports cover the scored candidates in every draft. Use unrestricted ADP when generating those exports.
-
-The uniform board chooses one rule for every band. The band-specific board chooses a rule separately in each band. Both choices use the average FPPG above ADP of the first five players in each band in earlier drafts, among picks with an outcome. The most recent two drafts are held out by default. Use `--holdout-seasons 1` when you have only two usable drafts.
-
-`data/backtest_draft_board_rankings.csv` contains each 150-player board, with market rank, board rank, and each band's rule. The summary in `data/backtest_draft_board_summary.csv` shows league-wide top-150 finishers captured, mean absolute rank error, late entrants into the board, and the performance of the five targets in each band. League-wide finish rank uses actual regular-season FPPG.
-
-## Draft value beyond hit rate
-
-The backtests report hit rate alongside two measures of how large the gains and losses were.
-
-- **Average ADP slots gained** is ADP minus finish rank, averaged over players with a rank. Positive means a better finish rank than ADP. The reports show the ranked sample size.
-- **Average FPTS above ADP** is actual regular-season fantasy points minus the points scored at the player's ADP slot on that season's league-wide leaderboard. Fractional ADPs interpolate between adjacent slots. The benchmark has a zero floor, and a player who missed the season scores zero actual points in this calculation.
-
-The surge and decline backtests use season totals and show `adp_slot_fpts` and `fpts_above_adp`. The rookie and cluster backtests use the same comparison on the per-game leaderboard, with `next_fppg`, `adp_slot_fppg`, and `fppg_above_adp` in the player-level files. Summary CSVs and console reports use the units of their respective leaderboard. Compare each group's average with the corresponding overall or comparison group value in the same run.
-
-### Low-game and outlier sensitivity
-
-The median shows the typical pick. The trimmed mean removes 10% of scored outcomes from each end, rounded down to a whole player count shown in `trimmed_players_per_tail`. The full mean includes every scored pick in the group.
-
-The reports show the contribution of low-game players to the full mean. That contribution is their sum of margins divided by the number of scored picks. The season-total backtests count 0–10 games and the per-game backtests count 1–10. The `avg_fpts_above_adp_over_10_games` or `avg_fppg_above_adp_over_10_games` column shows the mean among the rest. These are retrospective sensitivity checks using actual games played.
-
-The player-level files include `next_lineup_role` and `next_start_pct` for checking lineup changes. The rookie summary already reports value by second-year lineup role.
-
-## Files
-
-Each season goes into its own folder, such as `data/2018-19/`. Use `--output` to choose a different root.
-
-| File | Contents |
-| --- | --- |
-| `adp.csv` | FantasyPros table columns, requested year, player name, and FantasyPros player URL when available |
-| `games.csv` | ESPN schedule, game dates, teams, scores, and game status |
-| `player_box_scores.csv` | Player stats by game, including minutes, shooting, rebounds, assists, steals, blocks, and turnovers |
-| `team_box_scores.csv` | Team stats by game |
-| `play_by_play.csv` | Optional game events |
-| `game_json/<game_id>.json` | Original ESPN game records fetched when a requested CSV is missing a completed game |
-
-Join the ESPN files on `game_id`. ESPN identifies players by `athlete_id`. The backtests match FantasyPros players to unique ESPN IDs using normalized player names. The CSV reader strips FantasyPros team and position tags and trailing statuses from older downloads. The clustering and model backtests require a match to a player who appeared the prior regular season.
-
-The downloader prints how many completed games each CSV covers. If a requested feed is absent from both the CSV and the original game record, it reports the gap and exits with a nonzero status. Regular season, postseason, and any other game types present in the source stay in the files. Filter ESPN `season_type` to `2` for regular-season scoring.
-
-Sources are [FantasyPros NBA ADP](https://www.fantasypros.com/nba/adp/overall.php), the [SportsDataverse ESPN archive](https://github.com/sportsdataverse/sportsdataverse-data/releases), and the [original ESPN game records](https://github.com/sportsdataverse/hoopR-nba-raw).
+### Out-of-Sample `2026–27` Audit (241 Games Through `2026-11-21`, ~19.6% of Season)
+* **Top-150 edge correlation `r(pred_edge, actual_vs_ADP)`:** **`+0.142`**, positive across all 4 round bands (`R1–2: +0.150`, `R3–5: +0.094`, `R6–9: +0.193`, `R10–13: +0.233`), making **9/9 consecutive seasons** with positive Top-150 correlation (`2018–19` through `2026–27`).
+* **Head-to-head rank flips vs. ADP:** **`190 / 343 (55.4%)`** won.
+* **`ADP 151–225` sleeper discrimination:** Positive-edge sleepers hit **`10/14 (71.4%)`** actual Top-150 (`6/14 = 42.9%` Top-100) vs. **`14/63 (22.2%)`** for negative-edge players.
+* **Stage 1 full-NBA Top-150 (0% ADP + injury guard):** Captured **`110/150`** actual Top-150 players (vs. Market `108/150`), hitting **`16/32 (50.0%)`** on `ADP > 150` / unranked breakouts.

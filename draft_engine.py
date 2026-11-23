@@ -32,6 +32,7 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import HuberRegressor, RidgeCV
 from sklearn.model_selection import GroupKFold
@@ -110,7 +111,8 @@ SCORING_PRESETS = {
 VET_STATS_FEATURES = (
     "prior_adj_fppg", "prior_fppg", "prior_mpg", "prior_fppm", "prior_games",
     "prior_start_pct", "prior_post_break_fppg_chg", "prior_post_break_mpg_chg",
-    "age_at_prior_break", "age_under_24", "age_over_30",
+    "prior_tp_pct", "age_at_prior_break", "age_under_24", "age_over_30",
+    "age30_x_low_g", "young_x_post_mpg",
     "yoy_fppg_delta", "yoy_mpg_delta", "two_yr_weighted_fppg",
     "two_yr_games_avg", "no_prev2_season",
 )
@@ -123,7 +125,7 @@ VET_STATS_MPG_FEATURES = (
 
 VET_STATS_FPPM_FEATURES = (
     "prior_fppm", "prior_fppg", "prior_post_break_fppg_chg", "prior_mpg",
-    "age_at_prior_break", "age_under_24", "age_over_30",
+    "prior_tp_pct", "age_at_prior_break", "age_under_24", "age_over_30",
     "yoy_fppg_delta", "two_yr_weighted_fppg", "no_prev2_season",
 )
 
@@ -145,6 +147,8 @@ VET_RESIDUAL_FEATURES = (
     "log_adp", "mkt_expected_adj_fppg", "prior_minus_mkt_capped", "market_collapse_excess",
     "age_at_prior_break", "age_under_24", "age_over_30",
     "prior_games", "prior_mpg", "prior_fppm", "prior_start_pct",
+    "prior_post_break_mpg_chg", "prior_tp_pct",
+    "age30_x_low_g", "young_x_post_mpg", "log_adp_x_age30",
     "yoy_fppg_delta", "yoy_mpg_delta", "two_yr_weighted_fppg",
     "two_yr_games_avg", "no_prev2_season", "adp_platform_std", "espn_vs_avg",
 )
@@ -152,14 +156,14 @@ VET_RESIDUAL_FEATURES = (
 VET_RES_MPG_FEATURES = (
     "log_adp", "mkt_expected_adj_fppg", "prior_minus_mkt_capped", "market_collapse_excess",
     "age_at_prior_break", "age_under_24", "age_over_30", "prior_games", "prior_mpg",
-    "prior_start_pct", "yoy_mpg_delta", "two_yr_games_avg", "no_prev2_season",
+    "prior_start_pct", "prior_post_break_mpg_chg", "yoy_mpg_delta", "two_yr_games_avg", "no_prev2_season",
     "adp_platform_std", "espn_vs_avg",
 )
 
 VET_RES_FPPM_FEATURES = (
     "log_adp", "mkt_expected_adj_fppg", "prior_minus_mkt_capped", "market_collapse_excess",
     "age_at_prior_break", "age_under_24", "age_over_30", "prior_fppm", "prior_mpg",
-    "yoy_fppg_delta", "two_yr_weighted_fppg", "no_prev2_season",
+    "prior_tp_pct", "yoy_fppg_delta", "two_yr_weighted_fppg", "no_prev2_season",
     "adp_platform_std", "espn_vs_avg",
 )
 
@@ -181,7 +185,11 @@ BACKTEST_STRATEGIES = (
     "pure_stats_news_cut",
     "blend_adp_50",
     "residual_unified",
+    "residual_wait",
 )
+DEFAULT_WAIT_LAM = 0.85
+LATE_LAM_RAMP_START = 100.0
+LATE_LAM_RAMP_END = 150.0
 
 # Standard ESPN Roster Settings (10 starters + 3 bench, 4-C primary cap)
 VALID_POS = ("PG", "SG", "SF", "PF", "C")
@@ -504,15 +512,25 @@ def load_injuries_csv(path):
     return records
 
 
-def evaluate_injury_availability_cap(inj_rec, target_year, opening_night=None):
+def evaluate_injury_availability_cap(inj_rec, target_year, opening_night=None, as_of_date=None):
     """Translate an injury record into (avail_cap_or_None, est_missed_games, label).
 
+    Anchors remaining-season games to ``ref_start = max(opening_night, as_of_date or date.today())``:
     - Season-ending injury (Out for Season / return >= March 15) -> avail_cap = 0.0
-    - Delayed return past Opening Night -> cap remaining games to (82 - est_missed) * rehab_factor / 65
-    - Minor / pre-Opening-Night / DTD -> no cap (None), informational status label only
+    - Delayed return past ref_start (>= 5 est. games missed) -> cap remaining games to
+      (rem_season_games - est_missed) * rehab_factor / rem_ref_games
+    - Minor / pre-ref_start / DTD -> no cap (None), informational status label only
     """
     op_date = opening_night or date(target_year, 10, 21)
+    today = as_of_date if as_of_date is not None else date.today()
+    ref_start = max(op_date, today)
     season_end_cutoff = date(target_year + 1, 3, 15)
+
+    elapsed_days = max(0, (ref_start - op_date).days)
+    rem_season_days = max(0.0, SEASON_DAYS - elapsed_days)
+    rem_season_frac = rem_season_days / SEASON_DAYS
+    rem_season_games = SEASON_GAMES * rem_season_frac
+    rem_ref_games = REF_GAMES * rem_season_frac
 
     status_l = (inj_rec.get("status") or "").lower()
     text_l = " ".join([
@@ -539,15 +557,15 @@ def evaluate_injury_availability_cap(inj_rec, target_year, opening_night=None):
     )
     if is_season_ender:
         ret_s = f" ret {ret_date.isoformat()}" if ret_date is not None else ""
-        return 0.0, int(SEASON_GAMES), f"OUT_SEASON({inj_rec.get('status') or 'Out'}{ret_s})"
+        return 0.0, int(round(rem_season_games)), f"OUT_SEASON({inj_rec.get('status') or 'Out'}{ret_s})"
 
-    if ret_date is not None and ret_date > op_date:
-        days_missed = (ret_date - op_date).days
+    if ret_date is not None and ret_date > ref_start:
+        days_missed = (ret_date - ref_start).days
         est_missed = int(round((days_missed / SEASON_DAYS) * SEASON_GAMES))
-        if est_missed >= 5:
-            rem_games = max(0.0, SEASON_GAMES - est_missed)
+        if est_missed >= 5 and rem_ref_games > 0.0:
+            rem_games = max(0.0, rem_season_games - est_missed)
             rehab_mult = 0.85 if any(p in text_l for p in major_rehab_phrases) else 0.95
-            avail_cap = min(1.0, (rem_games * rehab_mult) / REF_GAMES)
+            avail_cap = min(1.0, (rem_games * rehab_mult) / rem_ref_games)
             return avail_cap, est_missed, f"INJ_CAP(ret {ret_date.isoformat()}, ~{est_missed}g miss)"
 
     if is_out_like:
@@ -557,7 +575,7 @@ def evaluate_injury_availability_cap(inj_rec, target_year, opening_night=None):
     return None, 0, ""
 
 
-def apply_injury_report_layer(rows, projections, proj_mpg, proj_fppm, proj_avail, injury_records, target_year, opening_night=None):
+def apply_injury_report_layer(rows, projections, proj_mpg, proj_fppm, proj_avail, injury_records, target_year, opening_night=None, as_of_date=None):
     """Apply live ESPN / CSV injury return-date availability caps directly onto AdjFPPG projections."""
     by_id = {}
     by_key = {}
@@ -575,7 +593,9 @@ def apply_injury_report_layer(rows, projections, proj_mpg, proj_fppm, proj_avail
         inj = by_id.get(str(r.get("athlete_id") or "")) or by_key.get(name_key(r["player"]))
         if inj is None:
             continue
-        avail_cap, _, label = evaluate_injury_availability_cap(inj, target_year, opening_night=opening_night)
+        avail_cap, _, label = evaluate_injury_availability_cap(
+            inj, target_year, opening_night=opening_night, as_of_date=as_of_date,
+        )
         labels[i] = label
         if avail_cap is None:
             continue
@@ -724,6 +744,7 @@ def load_season_custom(folder, scoring, prior_births=None):
             rec = {
                 "athlete_id": aid, "names": set(), "display_name": name,
                 "games": 0, "total_points": 0.0, "total_minutes": 0.0,
+                "tpm": 0.0, "tpa": 0.0,
                 "starts": 0, "unknown_starts": 0,
                 "pre_games": 0, "pre_points": 0.0, "pre_min": 0.0, "pre_min_games": 0,
                 "post_games": 0, "post_points": 0.0, "post_min": 0.0, "post_min_games": 0,
@@ -736,6 +757,8 @@ def load_season_custom(folder, scoring, prior_births=None):
         rec["total_points"] += pts
         if mins is not None and mins > 0:
             rec["total_minutes"] += mins
+        rec["tpm"] += _safe_float(stats.get("three_point_field_goals_made")) or 0.0
+        rec["tpa"] += _safe_float(stats.get("three_point_field_goals_attempted")) or 0.0
         st = str(starter).strip().lower()
         if st == "true":
             rec["starts"] += 1
@@ -782,6 +805,7 @@ def load_season_custom(folder, scoring, prior_births=None):
         p["adj_fppg"] = adj
         p["mpg"] = (p["total_minutes"] / g) if p["total_minutes"] > 0 else None
         p["fppm"] = (p["total_points"] / p["total_minutes"]) if p["total_minutes"] > 0 else None
+        p["tp_pct"] = ((p["tpm"] + 50.0 * 0.355) / (p["tpa"] + 50.0)) if p["tpa"] >= 10 else None
         p["start_pct"] = (100.0 * p["starts"] / g) if p["unknown_starts"] == 0 else None
         p["post_fppg_chg"] = (
             p["post_points"] / p["post_games"] - p["pre_points"] / p["pre_games"]
@@ -861,6 +885,13 @@ def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, pri
         if (dob is not None and all_star is not None) else None
     )
 
+    age_under_24 = max(0.0, 24.0 - age) if age is not None else None
+    age_over_30 = max(0.0, age - 30.0) if age is not None else None
+    a30_val = float(age_over_30 or 0.0)
+    au24_val = float(age_under_24 or 0.0)
+    pg_val = float(pr["games"]) if pr.get("games") is not None else REF_GAMES
+    pmpg_chg = float(pr.get("post_mpg_chg") or 0.0)
+
     row = {
         "prior_season": prior_name,
         "draft_season": target_season,
@@ -879,9 +910,12 @@ def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, pri
         "prior_start_pct": pr["start_pct"],
         "prior_post_break_fppg_chg": pr["post_fppg_chg"],
         "prior_post_break_mpg_chg": pr["post_mpg_chg"],
+        "prior_tp_pct": pr["tp_pct"],
         "age_at_prior_break": age,
-        "age_under_24": max(0.0, 24.0 - age) if age is not None else None,
-        "age_over_30": max(0.0, age - 30.0) if age is not None else None,
+        "age_under_24": age_under_24,
+        "age_over_30": age_over_30,
+        "age30_x_low_g": a30_val * max(0.0, (REF_GAMES - pg_val) / REF_GAMES),
+        "young_x_post_mpg": au24_val * max(0.0, pmpg_chg),
         "yoy_fppg_delta": (pr["fppg"] - p2["fppg"]) if p2 else None,
         "yoy_mpg_delta": (pr["mpg"] - p2["mpg"]) if (p2 and pr["mpg"] is not None and p2["mpg"] is not None) else None,
         "two_yr_weighted_fppg": (0.65 * pr["fppg"] + 0.35 * p2["fppg"]) if p2 else pr["fppg"],
@@ -929,6 +963,7 @@ def make_rookie_feature_row(
         "prior_adj_fppg": None, "prior_adj_rank": None, "prior_raw_rank": None,
         "prior_fppg": None, "prior_mpg": None, "prior_fppm": None, "prior_games": None,
         "prior_start_pct": None, "prior_post_break_fppg_chg": None, "prior_post_break_mpg_chg": None,
+        "prior_tp_pct": None,
         "age_at_prior_break": None, "age_under_24": None, "age_over_30": None,
         "yoy_fppg_delta": None, "yoy_mpg_delta": None, "two_yr_weighted_fppg": None,
         "two_yr_games_avg": None, "no_prev2_season": None,
@@ -978,9 +1013,19 @@ def attach_adp_fields(row, entry, prior_s, next_s=None):
         is_collapse = slot_drop >= COLLAPSE_MIN_SLOT_DROP and raw_gap > collapse_thresh
         row["prior_minus_mkt_capped"] = max(-1.25 * collapse_thresh, min(collapse_thresh, raw_gap))
         row["market_collapse_excess"] = (raw_gap - collapse_thresh) if is_collapse else 0.0
+        a30 = float(row.get("age_over_30") or 0.0)
+        au24 = float(row.get("age_under_24") or 0.0)
+        pg = float(row["prior_games"]) if row.get("prior_games") is not None else REF_GAMES
+        pmpg_chg = float(row.get("prior_post_break_mpg_chg") or 0.0)
+        row["age30_x_low_g"] = a30 * max(0.0, (REF_GAMES - pg) / REF_GAMES)
+        row["young_x_post_mpg"] = au24 * max(0.0, pmpg_chg)
+        row["log_adp_x_age30"] = row["log_adp"] * a30
     else:
         row["prior_minus_mkt_capped"] = None
         row["market_collapse_excess"] = 0.0
+        row["age30_x_low_g"] = None
+        row["young_x_post_mpg"] = None
+        row["log_adp_x_age30"] = None
 
     if next_s is not None and "next_adj_fppg" in row:
         slot_adj = adp_slot_points(next_s["adj_lb"], adp)
@@ -1063,13 +1108,15 @@ def fit_predict_pure_stats(tr_vets, tr_rookies, evaluated_all, prior_waiver):
     if tr_vets and ev_vets:
         y_vet = np.array([float(r["next_adj_fppg"]) for r in tr_vets], dtype=float)
         h_feats = active_features(tr_vets, VET_STATS_FEATURES)
+        X_tr_h = to_matrix(tr_vets, h_feats)
+        X_ev_h = to_matrix(ev_vets, h_feats)
         h_pipe = make_pipeline(
             SimpleImputer(strategy="median", keep_empty_features=True),
             StandardScaler(),
             HuberRegressor(alpha=25.0, epsilon=1.35, max_iter=1000),
         )
-        h_pipe.fit(to_matrix(tr_vets, h_feats), y_vet)
-        ev_h = h_pipe.predict(to_matrix(ev_vets, h_feats))
+        h_pipe.fit(X_tr_h, y_vet)
+        ev_h = h_pipe.predict(X_ev_h)
         vet_coefs = dict(zip(h_feats, map(float, h_pipe.named_steps["huberregressor"].coef_)))
 
         rate_rows = [r for r in tr_vets if r.get("next_mpg") is not None and r.get("next_fppm") is not None]
@@ -1116,7 +1163,22 @@ def fit_predict_pure_stats(tr_vets, tr_rookies, evaluated_all, prior_waiver):
         meta.fit(np.column_stack([tr_struct, tr_pa, tr_a30]), y_vet)
         ev_d = meta.predict(np.column_stack([ev_struct, ev_pa, ev_a30]))
 
-        ev_ens = 0.5 * ev_h + 0.5 * ev_d
+        if len(tr_vets) >= 80:
+            gb = HistGradientBoostingRegressor(
+                loss="absolute_error",
+                learning_rate=0.03,
+                max_iter=100,
+                max_depth=2,
+                min_samples_leaf=35,
+                l2_regularization=20.0,
+                max_bins=64,
+                random_state=42,
+            )
+            gb.fit(X_tr_h, y_vet)
+            ev_g = gb.predict(X_ev_h)
+            ev_ens = 0.375 * ev_h + 0.375 * ev_d + 0.25 * ev_g
+        else:
+            ev_ens = 0.5 * ev_h + 0.5 * ev_d
         for pos, idx in enumerate(ev_vet_idx):
             proj_stats[idx] = ev_ens[pos]
             proj_mpg[idx] = ev_m[pos]
@@ -1196,8 +1258,16 @@ def apply_optional_adp_layer(rows, pure_stats_preds, adp_weight=0.0, apply_colla
 # Stage 2 Model: ADP-Aware Residual Champion (`unified_equal`, lam=0.50)
 # ==============================================================================
 
-def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver, lam=0.50):
-    """Fit Stage-2 `unified_equal` (50/50 Huber + Decomposed vets + Rookie Huber) on custom-scored ADP pools."""
+def _effective_residual_lam(adp, lam_early, lam_late):
+    """Smoothly ramp residual weight from `lam_early` (ADP <= 100) to `lam_late` (ADP >= 150)."""
+    if adp is None or lam_late <= lam_early:
+        return float(lam_early)
+    t = max(0.0, min(1.0, (float(adp) - LATE_LAM_RAMP_START) / (LATE_LAM_RAMP_END - LATE_LAM_RAMP_START)))
+    return float(lam_early) + t * (float(lam_late) - float(lam_early))
+
+
+def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver, lam=0.50, lam_late=None):
+    """Fit Stage-2 `unified_equal` (Huber + Decomposed + shallow L1 GBDT vets + Rookie Huber) on custom-scored ADP pools."""
     tr_vets = [
         r for r in training_adp_rows
         if r["player_type"] == "returning_vet" and r.get("adp") is not None and r["adp"] <= MAX_RESIDUAL_VET_ADP
@@ -1205,6 +1275,10 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
     tr_rk = [
         r for r in training_adp_rows
         if r["player_type"] == "rookie" and r.get("adp") is not None and r["adp"] <= MAX_RESIDUAL_ROOKIE_ADP
+    ]
+    tr_abs = [
+        r for r in training_adp_rows
+        if r["player_type"] == "returning_absence" and r.get("adp") is not None and r["adp"] <= MAX_RESIDUAL_VET_ADP
     ]
 
     ev_vet_idx = [i for i, r in enumerate(evaluated_all) if r["player_type"] == "returning_vet" and r.get("adp") is not None]
@@ -1227,13 +1301,15 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
     if tr_vets and ev_vets:
         y_vet = np.array([float(r["fppg_above_adp"]) for r in tr_vets], dtype=float)
         h_feats = active_features(tr_vets, VET_RESIDUAL_FEATURES)
+        X_tr_h = to_matrix(tr_vets, h_feats)
+        X_ev_h = to_matrix(ev_vets, h_feats)
         h_pipe = make_pipeline(
             SimpleImputer(strategy="median", keep_empty_features=True),
             StandardScaler(),
             HuberRegressor(alpha=25.0, epsilon=1.35, max_iter=1000),
         )
-        h_pipe.fit(to_matrix(tr_vets, h_feats), y_vet)
-        ev_h = h_pipe.predict(to_matrix(ev_vets, h_feats))
+        h_pipe.fit(X_tr_h, y_vet)
+        ev_h = h_pipe.predict(X_ev_h)
         vet_coefs = dict(zip(h_feats, map(float, h_pipe.named_steps["huberregressor"].coef_)))
 
         rate_rows = [r for r in tr_vets if r.get("next_mpg") is not None and r.get("next_fppm") is not None]
@@ -1283,7 +1359,22 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
         meta.fit(np.column_stack([tr_struct - tr_mkt, (tr_struct - tr_mkt) * tr_la, tr_la, tr_c]), y_vet)
         ev_d = meta.predict(np.column_stack([ev_struct - ev_mkt, (ev_struct - ev_mkt) * ev_la, ev_la, ev_c]))
 
-        ev_eq = 0.5 * ev_h + 0.5 * ev_d
+        if len(tr_vets) >= 80:
+            gb = HistGradientBoostingRegressor(
+                loss="absolute_error",
+                learning_rate=0.03,
+                max_iter=100,
+                max_depth=2,
+                min_samples_leaf=35,
+                l2_regularization=20.0,
+                max_bins=64,
+                random_state=42,
+            )
+            gb.fit(X_tr_h, y_vet)
+            ev_g = gb.predict(X_ev_h)
+            ev_eq = 0.375 * ev_h + 0.375 * ev_d + 0.25 * ev_g
+        else:
+            ev_eq = 0.5 * ev_h + 0.5 * ev_d
         vet_peer_center = float(np.median(ev_eq))
         for pos, idx in enumerate(ev_vet_idx):
             raw_residuals[idx] = ev_eq[pos]
@@ -1329,16 +1420,24 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
         for pos, idx in enumerate(ev_rk_idx):
             raw_residuals[idx] = ev_r[pos]
 
+    if len(tr_abs) >= 5:
+        abs_med = float(np.median([float(r["fppg_above_adp"]) for r in tr_abs]))
+        abs_shrink = len(tr_abs) / (len(tr_abs) + 10.0)
+        abs_pred = abs_shrink * abs_med + (1.0 - abs_shrink) * vet_peer_center
+    else:
+        abs_pred = vet_peer_center
     for idx in ev_abs_idx:
-        raw_residuals[idx] = vet_peer_center
+        raw_residuals[idx] = abs_pred
 
+    eff_lam_late = max(float(lam), DEFAULT_WAIT_LAM) if lam_late is None else float(lam_late)
     clip_val = max(4.0, COLLAPSE_WAIVER_RATIO * prior_waiver)
     final_proj = np.full(n, prior_waiver, dtype=float)
     scaled_edges = np.zeros(n, dtype=float)
     for i, r in enumerate(evaluated_all):
         mkt = r.get("mkt_expected_adj_fppg")
         if mkt is not None:
-            adj = lam * max(-clip_val, min(clip_val, float(raw_residuals[i])))
+            row_lam = _effective_residual_lam(r.get("adp"), lam, eff_lam_late)
+            adj = row_lam * max(-clip_val, min(clip_val, float(raw_residuals[i])))
             scaled_edges[i] = adj
             final_proj[i] = float(mkt) + adj
         else:
@@ -1610,7 +1709,113 @@ def score_roster_espn(roster, bundle):
     return res
 
 
-def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, n_teams=12, n_rounds=13, trials_per_slot=12, adp_var=2.0, max_centers=4, seed=None):
+def _norm_cdf(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def estimate_survival_prob(player_adp, threshold_adp, sigma, margin=0.0):
+    """Probability a player with ``player_adp`` survives K opponent picks past ``threshold_adp``."""
+    eff_sigma = max(0.5, float(sigma))
+    return _norm_cdf((float(player_adp) - (float(threshold_adp) + float(margin))) / eff_sigma)
+
+
+def choose_reach_or_wait_pick(
+    hero_board,
+    vals,
+    adps,
+    taken,
+    roster,
+    cur_c,
+    cur_m,
+    rem_after,
+    masks7,
+    is_c,
+    max_centers,
+    picks_until_next,
+    surv_sigma,
+    round_num,
+    surv_margin=1.0,
+    min_wait_gain=0.05,
+):
+    """ADP-aware 2-pick survival optimizer: choose legal pick i maximizing V(i) + E[max_{j!=i, j survives K} V(j)].
+
+    - Enforces ESPN's 4-Center primary cap and 7-starter matching feasibility for both now and next turn.
+    - In the final round or back-to-back turns (K == 0), reduces cleanly to greedy top legal value.
+    """
+    legal = []
+    for idx in hero_board:
+        if taken[idx] or (is_c[idx] and cur_c >= max_centers):
+            continue
+        if cur_m + rem_after >= 7:
+            legal.append((idx, max_matching_7(roster + [idx], masks7) if cur_m < 7 else 7))
+        else:
+            cm = max_matching_7(roster + [idx], masks7)
+            if cm + rem_after >= 7:
+                legal.append((idx, cm))
+        if len(legal) >= 35:
+            break
+
+    if not legal:
+        choice = next(
+            (idx for idx in hero_board if not taken[idx] and not (is_c[idx] and cur_c >= max_centers)),
+            next(idx for idx in hero_board if not taken[idx]),
+        )
+        return choice, max_matching_7(roster + [choice], masks7)
+
+    if picks_until_next is None or picks_until_next <= 0 or len(legal) == 1:
+        return legal[0]
+
+    avail_pairs = sorted((adps[i], i) for i in range(len(taken)) if not taken[i])
+    n_av = len(avail_pairs)
+    k = picks_until_next
+    if k >= n_av:
+        return legal[0]
+
+    eff_sig = max(0.5, float(surv_sigma))
+    eff_margin = float(surv_margin)
+
+    best_ev = None
+    greedy_ev = None
+    best_pair = legal[0]
+    for pos_i, (idx_i, new_m_i) in enumerate(legal[:12]):
+        val_i = vals[idx_i]
+        rem_adps = [a for a, idx in avail_pairs if idx != idx_i]
+        if k >= len(rem_adps):
+            t_k = rem_adps[-1]
+        else:
+            t_k = 0.5 * (rem_adps[k - 1] + rem_adps[k])
+        next_c_full = (cur_c + (1 if is_c[idx_i] else 0)) >= max_centers
+
+        ev_next = 0.0
+        rem_prob = 1.0
+        last_val = None
+        for idx_j, _ in legal:
+            if idx_j == idx_i or (next_c_full and is_c[idx_j]):
+                continue
+            last_val = vals[idx_j]
+            s_j = estimate_survival_prob(adps[idx_j], t_k, eff_sig, margin=eff_margin)
+            if s_j <= 1e-6:
+                continue
+            ev_next += rem_prob * s_j * vals[idx_j]
+            rem_prob *= (1.0 - s_j)
+            if rem_prob < 1e-5:
+                break
+        if rem_prob > 1e-6 and last_val is not None:
+            ev_next += rem_prob * last_val
+
+        tot_ev = val_i + ev_next
+        if pos_i == 0:
+            greedy_ev = tot_ev
+            best_ev = tot_ev
+            best_pair = (idx_i, new_m_i)
+        elif tot_ev > max(best_ev + 1e-9, greedy_ev + float(min_wait_gain)):
+            best_ev = tot_ev
+            best_pair = (idx_i, new_m_i)
+
+    return best_pair
+
+
+def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, n_teams=12, n_rounds=13, trials_per_slot=12, adp_var=2.0, max_centers=4, seed=None):
     """Run 12-team x 13-round ESPN snake draft simulation comparing Stage-1 and Stage-2 strategies."""
     if seed is None:
         seed = random.SystemRandom().randint(1, 999_999)
@@ -1622,6 +1827,13 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, n_teams=12, n_rounds
         for rnd in range(n_rounds)
         for team in (range(n_teams - 1, -1, -1) if rnd % 2 == 1 else range(n_teams))
     ]
+    next_k_by_pick = []
+    for p_idx, (_, team) in enumerate(pick_order):
+        nxt = next((j for j in range(p_idx + 1, len(pick_order)) if pick_order[j][1] == team), None)
+        next_k_by_pick.append((nxt - p_idx - 1) if nxt is not None else None)
+    surv_sigma = max(2.5, 0.7 * adp_var)
+    surv_margin = max(1.0, 0.4 * adp_var)
+
     records_split = defaultdict(list)
     records_season = defaultdict(list)
     sample_slot = rng.randrange(n_teams)
@@ -1633,15 +1845,20 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, n_teams=12, n_rounds
         b = season_eval_bundles[s]
         split = b["split"]
         players = b["players"]
+        adps = [p["adp"] for p in players]
         straight_order = list(range(len(players)))
         hero_orders = {}
+        hero_vals = {}
         for strat in BACKTEST_STRATEGIES:
             if strat == "market":
                 hero_orders[strat] = straight_order
+                hero_vals[strat] = [p["mkt_expected_adj_fppg"] for p in players]
             else:
-                scored = [(p[f"{strat}_proj"], -p["market_rank"], idx) for idx, p in enumerate(players)]
+                vals = [p[f"{strat}_proj"] for p in players]
+                scored = [(vals[idx], -p["market_rank"], idx) for idx, p in enumerate(players)]
                 scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
                 hero_orders[strat] = [idx for _, _, idx in scored]
+                hero_vals[strat] = vals
 
         for slot in range(n_teams):
             for trial in range(trials_per_slot):
@@ -1659,29 +1876,38 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, n_teams=12, n_rounds
                     hero_picks = []
                     masks7, is_c = b["masks7"], b["is_center"]
 
-                    for pick_num, (rnd, team) in enumerate(pick_order, start=1):
-                        board = hero_orders[strat] if team == slot else (straight_order if rnd == 1 else opp_noisy[team])
+                    for p_idx, (rnd, team) in enumerate(pick_order):
+                        pick_num = p_idx + 1
                         roster = rosters[team]
                         rem_after = n_rounds - len(roster) - 1
                         cur_c, cur_m = c_cnt[team], m_sz[team]
-                        choice, new_m = None, cur_m
-                        for idx in board:
-                            if taken[idx] or (is_c[idx] and cur_c >= max_centers):
-                                continue
-                            if cur_m + rem_after >= 7:
-                                choice = idx
-                                new_m = max_matching_7(roster + [idx], masks7) if cur_m < 7 else 7
-                                break
-                            cm = max_matching_7(roster + [idx], masks7)
-                            if cm + rem_after >= 7:
-                                choice, new_m = idx, cm
-                                break
-                        if choice is None:
-                            choice = next(
-                                (idx for idx in board if not taken[idx] and not (is_c[idx] and cur_c >= max_centers)),
-                                next(idx for idx in board if not taken[idx]),
+
+                        if team == slot and strat == "residual_wait":
+                            choice, new_m = choose_reach_or_wait_pick(
+                                hero_orders[strat], hero_vals[strat], adps, taken,
+                                roster, cur_c, cur_m, rem_after, masks7, is_c, max_centers,
+                                next_k_by_pick[p_idx], surv_sigma, rnd, surv_margin=surv_margin,
                             )
-                            new_m = max_matching_7(roster + [choice], masks7)
+                        else:
+                            board = hero_orders[strat] if team == slot else (straight_order if rnd == 1 else opp_noisy[team])
+                            choice, new_m = None, cur_m
+                            for idx in board:
+                                if taken[idx] or (is_c[idx] and cur_c >= max_centers):
+                                    continue
+                                if cur_m + rem_after >= 7:
+                                    choice = idx
+                                    new_m = max_matching_7(roster + [idx], masks7) if cur_m < 7 else 7
+                                    break
+                                cm = max_matching_7(roster + [idx], masks7)
+                                if cm + rem_after >= 7:
+                                    choice, new_m = idx, cm
+                                    break
+                            if choice is None:
+                                choice = next(
+                                    (idx for idx in board if not taken[idx] and not (is_c[idx] and cur_c >= max_centers)),
+                                    next(idx for idx in board if not taken[idx]),
+                                )
+                                new_m = max_matching_7(roster + [choice], masks7)
                         taken[choice] = True
                         roster.append(choice)
                         if is_c[choice]:
@@ -1750,8 +1976,8 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, n_teams=12, n_rounds
         for strat in BACKTEST_STRATEGIES:
             sim_seasons.append(agg(records_season[(s, sp, strat)], {"season": s, "split": sp, "strategy": strat}))
 
-    print(f"\n================ 12-TEAM ESPN DRAFT SIMULATOR (Stage 1 Pure Stats vs. Stage 2 Residual lam={lam:.2f}) ================")
-    print(f"Rules: {n_teams}T x {n_rounds}R | PG,SG,SF,PF,C,G,F,3xUTIL + 3 BE | Max {max_centers} Primary C | R1 straight ADP, R2-13 Uniform[-{adp_var:g},+{adp_var:g}]")
+    print(f"\n================ 12-TEAM ESPN DRAFT SIMULATOR (Stage 1 Pure Stats vs. Stage 2 Residual lam={lam:.2f} / Wait lam={wait_lam:.2f}) ================")
+    print(f"Rules: {n_teams}T x {n_rounds}R | PG,SG,SF,PF,C,G,F,3xUTIL + 3 BE | Max {max_centers} Primary C | R1 straight ADP, R2-13 Uniform[-{adp_var:g},+{adp_var:g}] | Wait(sig={surv_sigma:.1f}, m={surv_margin:.1f})")
     print(f"Trials: {trials_per_slot} x {n_teams} slots = {trials_per_slot * n_teams} drafts/season | Seed: {seed}")
 
     for split_label, title in (("cv", "CV SEASONS"), ("holdout", "HOLDOUT SEASONS"), ("all", "ALL SEASONS COMBINED")):
@@ -1772,18 +1998,18 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, n_teams=12, n_rounds
                 f"{r['hero_rk']:4.2f}/{r['field_rk']:4.2f} {r['hero_0g']:4.2f}/{r['field_0g']:4.2f}"
             )
 
-    print(f"\n=== Season-by-Season ESPN FPTS Diff (Market vs. Blend-50 vs. Residual Unified lam={lam:.2f}) ===")
-    print(f"  {'Season':7s} {'Split':7s} | {'Market':>8s} | {'Blend50':>8s} {'Rk':>4s} | {'Residual':>9s} {'Rk':>4s} {'Win%':>5s} {'Top4%':>6s} {'0g(H/F)':>9s}")
-    print("  " + "-" * 86)
+    print(f"\n=== Season-by-Season ESPN FPTS Diff (Market vs. Residual Greedy lam={lam:.2f} vs. Residual+Wait lam={wait_lam:.2f}) ===")
+    print(f"  {'Season':7s} {'Split':7s} | {'Market':>8s} | {'Residual':>9s} {'Rk':>4s} {'Top4%':>6s} | {'ResidWait':>9s} {'Rk':>4s} {'Win%':>5s} {'Top4%':>6s} {'0g(H/F)':>9s}")
+    print("  " + "-" * 96)
     by_sm = {(r["season"], r["strategy"]): r for r in sim_seasons}
     for s in seasons:
         m = by_sm[(s, "market")]
-        b5 = by_sm[(s, "blend_adp_50")]
         ru = by_sm[(s, "residual_unified")]
+        rw = by_sm[(s, "residual_wait")]
         print(
             f"  {s:7s} {ru['split']:7s} | {m['espn_diff']:+8.1f} | "
-            f"{b5['espn_diff']:+8.1f} {b5['avg_rank']:4.2f} | "
-            f"{ru['espn_diff']:+9.1f} {ru['avg_rank']:4.2f} {ru['win_pct']:4.1f}% {ru['top4_pct']:5.1f}% {ru['hero_0g']:4.2f}/{ru['field_0g']:4.2f}"
+            f"{ru['espn_diff']:+9.1f} {ru['avg_rank']:4.2f} {ru['top4_pct']:5.1f}% | "
+            f"{rw['espn_diff']:+9.1f} {rw['avg_rank']:4.2f} {rw['win_pct']:4.1f}% {rw['top4_pct']:5.1f}% {rw['hero_0g']:4.2f}/{rw['field_0g']:4.2f}"
         )
 
     if sample_info:
@@ -1809,7 +2035,7 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, n_teams=12, n_rounds
     return sim_summary, sim_seasons
 
 
-def run_backtest(data, scoring_name, scoring, lam=0.50, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None):
+def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None):
     seasons_dirs, season_data, births_cache, profiles_cache = load_all_completed_seasons(data, scoring)
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, _, _ = build_all_training_datasets(
         data, seasons_dirs, season_data, births_cache, profiles_cache, max_pool_adp=max_pool_adp,
@@ -1847,9 +2073,11 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, holdout_seasons=2, cv_fo
         news_cut_preds, _ = apply_optional_adp_layer(cands, pure_preds, adp_weight=0.0, apply_collapse_guard=True)
         blend50_preds, _ = apply_optional_adp_layer(cands, pure_preds, adp_weight=0.50, apply_collapse_guard=True)
 
-        # Stage 2: ADP-Aware Residual Champion (`unified_equal`, lam)
+        # Stage 2: ADP-Aware Residual Champion (`unified_equal`, lam) + Reach-vs-Wait (`wait_lam`)
         res_resid = fit_predict_residual_unified(tr_adp_rows, cands, prior_waiver, lam=lam)
         resid_preds = res_resid["residual_proj"]
+        clip_val = max(4.0, COLLAPSE_WAIVER_RATIO * prior_waiver)
+        raw_res = res_resid["raw_residuals"]
 
         for i, row in enumerate(cands):
             row["split"] = split
@@ -1857,6 +2085,12 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, holdout_seasons=2, cv_fo
             row["pure_stats_news_cut_proj"] = round(float(news_cut_preds[i]), 3)
             row["blend_adp_50_proj"] = round(float(blend50_preds[i]), 3)
             row["residual_unified_proj"] = round(float(resid_preds[i]), 3)
+            mkt_i = row.get("mkt_expected_adj_fppg")
+            wait_p = (
+                float(mkt_i) + wait_lam * max(-clip_val, min(clip_val, float(raw_res[i])))
+                if mkt_i is not None else float(resid_preds[i])
+            )
+            row["residual_wait_proj"] = float(wait_p)
 
         board_rows_by_split[split].extend(cands)
         if split == "holdout":
@@ -1955,7 +2189,7 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, holdout_seasons=2, cv_fo
 
     if not skip_sim and sim_bundles:
         sim_summary, sim_seasons = run_espn_backtest_sim(
-            sim_bundles, lam=lam, trials_per_slot=trials_per_slot, adp_var=adp_var, seed=seed,
+            sim_bundles, lam=lam, wait_lam=wait_lam, trials_per_slot=trials_per_slot, adp_var=adp_var, seed=seed,
         )
         write_csv(data / f"draft_engine_sim_summary_{scoring_name}.csv", sim_summary)
         write_csv(data / f"draft_engine_sim_by_season_{scoring_name}.csv", sim_seasons)
@@ -2008,6 +2242,7 @@ def generate_live_board(
     use_live_injuries=False,
     injuries_csv=None,
     opening_night_str=None,
+    as_of_date_str=None,
     exclude_players="",
     rookies_csv=None,
     board_limit=225,
@@ -2062,6 +2297,11 @@ def generate_live_board(
         injury_records.extend(csv_recs)
         injury_source_notes.append(f"{Path(injuries_csv).name} ({len(csv_recs)} rows)")
     opening_night = _parse_iso_date(opening_night_str) if opening_night_str else date(target_year, 10, 21)
+    if opening_night_str and opening_night is None:
+        raise ValueError(f"invalid --opening-night date {opening_night_str!r} (expected YYYY-MM-DD)")
+    as_of_date = _parse_iso_date(as_of_date_str) if as_of_date_str else None
+    if as_of_date_str and as_of_date is None:
+        raise ValueError(f"invalid --as-of-date {as_of_date_str!r} (expected YYYY-MM-DD)")
 
     # Load target-season profiles if available (and fallback prior profiles to rescue returning_absence vets)
     try:
@@ -2266,7 +2506,7 @@ def generate_live_board(
     if injury_records:
         final_preds, inj_labels, inj_capped = apply_injury_report_layer(
             cands, final_preds, proj_mpg, proj_fppm, proj_avail,
-            injury_records, target_year, opening_night=opening_night,
+            injury_records, target_year, opening_night=opening_night, as_of_date=as_of_date,
         )
 
     ranked = sorted(range(len(cands)), key=lambda i: (-final_preds[i], -pure_preds[i], cands[i]["player"]))
@@ -2306,7 +2546,12 @@ def generate_live_board(
     else:
         print(f"Stage-1 Pre-ADP Pure Stats (0% ADP): trained on {len(prior_seasons_pure)} completed seasons ({len(tr_pure_vets)} vets, {len(tr_pure_rks)} rookies)")
     if injury_source_notes:
-        print(f"Injury Layer: {', '.join(injury_source_notes)} | Opening Night ref: {opening_night.isoformat()} | Projections capped: {inj_capped}")
+        inj_ref = max(opening_night, as_of_date or date.today())
+        print(
+            f"Injury Layer: {', '.join(injury_source_notes)} | "
+            f"Ref start: {inj_ref.isoformat()} (Opening Night: {opening_night.isoformat()}) | "
+            f"Projections capped: {inj_capped}"
+        )
     if excluded_keys:
         print(f"Manual exclusions: {exclude_players}")
 
@@ -2377,11 +2622,13 @@ def main():
     parser.add_argument("--generate-board", metavar="YYYY-YY", help="generate ranked draft board for a season")
     parser.add_argument("--mode", choices=("auto", "pure_stats", "residual"), default="auto", help="board mode: auto (residual if adp.csv exists else pure_stats), pure_stats, or residual")
     parser.add_argument("--lam", type=float, default=0.50, help="Stage-2 residual scale lambda (default: 0.50)")
+    parser.add_argument("--wait-lam", type=float, default=DEFAULT_WAIT_LAM, help=f"Stage-2 Reach-vs-Wait EV residual scale lambda (default: {DEFAULT_WAIT_LAM})")
     parser.add_argument("--adp-weight", type=float, default=0.0, help="optional Stage-1 ADP blend weight in [0, 1] (default: 0.0)")
     parser.add_argument("--collapse-guard", action="store_true", help="auto-fade CHECK_INJURY alerts in pure_stats mode")
     parser.add_argument("--use-live-injuries", action="store_true", help="fetch live ESPN NBA injury report & cap availability from return dates")
     parser.add_argument("--injuries-csv", type=Path, default=None, help="optional local injury CSV (player,status,return_date,notes)")
     parser.add_argument("--opening-night", default=None, help="override Opening Night date (YYYY-MM-DD) for injury games-missed math")
+    parser.add_argument("--as-of-date", default=None, help="override reference date (YYYY-MM-DD) for mid-season injury games-missed math (default: today)")
     parser.add_argument("--exclude-players", default="", help="comma-separated confirmed out players to remove completely")
     parser.add_argument("--rookies-csv", type=Path, default=None, help="optional CSV of incoming rookies (player,draft_pick,team,age,pos)")
     parser.add_argument("--holdout-seasons", type=int, default=2, help="latest draft seasons held out in --backtest (default: 2)")
@@ -2411,6 +2658,7 @@ def main():
                 use_live_injuries=args.use_live_injuries,
                 injuries_csv=args.injuries_csv,
                 opening_night_str=args.opening_night,
+                as_of_date_str=args.as_of_date,
                 exclude_players=args.exclude_players,
                 rookies_csv=args.rookies_csv,
             )
@@ -2420,6 +2668,7 @@ def main():
                 scoring_name=scoring_name,
                 scoring=scoring,
                 lam=args.lam,
+                wait_lam=args.wait_lam,
                 holdout_seasons=args.holdout_seasons,
                 cv_folds=args.cv_folds,
                 skip_sim=args.skip_sim,
