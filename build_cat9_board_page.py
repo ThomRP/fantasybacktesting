@@ -17,10 +17,11 @@ Usage:
 
 import argparse
 import json
+import random
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
-from statistics import median
+from statistics import mean, median
 
 import numpy as np
 
@@ -170,6 +171,145 @@ def load_cat9_timeline(folder: Path, w9: np.ndarray, is_live: bool = False):
         "step_z_by_id": step_z_by_id,
         "final_cat_z": final_cat_z,
         "final_zero_vec": final_zero_vec,
+    }
+
+
+def simulate_live_cat9_season(folder: Path, cands: list, w9: np.ndarray, n_teams: int = 12, n_rounds: int = 13, trials_per_slot: int = 60, adp_var: float = 2.0, max_centers: int = 4, seed: int = 42):
+    """Run 720 Pure Greedy 12-team 9-Cat draft-and-hold leagues on the in-progress live season (Roto + H2H-E + H2H-M)."""
+    if len(cands) < n_teams * n_rounds:
+        return None
+    game_dates = {}
+    for g in de.read_csv(folder / "games.csv"):
+        if not de.regular_season_game(g):
+            continue
+        gid = g.get("game_id")
+        gd = (g.get("game_date") or "")[:10]
+        hs = de._safe_float(g.get("home_score"))
+        as_ = de._safe_float(g.get("away_score"))
+        if not gid or not gd or hs is None or as_ is None or (hs == 0 and as_ == 0):
+            continue
+        game_dates[gid] = gd
+
+    raw_daily = defaultdict(dict)  # aid -> gd -> ndarray(11)
+    p_tot = defaultdict(lambda: np.zeros(11, dtype=np.float64))
+    p_g = defaultdict(int)
+    seen_dates = set()
+    for gid, aid, _name, stats, _pos, _starter, _tid in de.player_box_scores(folder, game_dates):
+        gd = game_dates[gid]
+        vals = np.array([float(stats.get(k) or 0.0) for k in c9.STAT_KEYS_11], dtype=np.float64)
+        prev = raw_daily[aid].get(gd)
+        raw_daily[aid][gd] = vals if prev is None else (prev + vals)
+        p_tot[aid] += vals
+        p_g[aid] += 1
+        seen_dates.add(gd)
+
+    if not seen_dates:
+        return None
+    dates_sorted = sorted(seen_dates)
+    date_to_idx = {d: i for i, d in enumerate(dates_sorted)}
+    weeks_sorted = sorted({date.fromisoformat(d).isocalendar()[:2] for d in dates_sorted})
+    wk_to_idx = {wk: i for i, wk in enumerate(weeks_sorted)}
+    day_to_week = np.array([wk_to_idx[date.fromisoformat(d).isocalendar()[:2]] for d in dates_sorted], dtype=np.int32)
+    n_days, n_wks = len(dates_sorted), len(weeks_sorted)
+    valid_wks = list(range(n_wks))
+
+    # Actual per-game Z so far for active lineup priority on crowded days
+    z_live = c9.compute_cat9_zscores(dict(p_tot), dict(p_g), min_qual_games=3)
+
+    players = sorted(cands, key=lambda r: r["market_rank"])
+    n_p = len(players)
+    played_mat = np.zeros((n_p, n_days), dtype=np.uint8)
+    player_tot11 = np.zeros((n_p, 11), dtype=np.float64)
+    player_wk11 = np.zeros((n_p, n_wks, 11), dtype=np.float64)
+    daily_11 = []
+    masks7, masks10, is_c, prio = [], [], [], []
+    for idx, p in enumerate(players):
+        ptup = p["positions"]
+        m7, m10 = de._pos_to_masks(ptup)
+        masks7.append(m7)
+        masks10.append(m10)
+        is_c.append(ptup[0] == "C")
+        zr = z_live["z_raw"].get(p["athlete_id"])
+        prio.append(float(zr @ w9) if zr is not None else -99.0)
+        dmap_idx = {}
+        for gd, v11 in raw_daily.get(p["athlete_id"], {}).items():
+            di = date_to_idx[gd]
+            dmap_idx[di] = v11
+            played_mat[idx, di] = 1
+            player_tot11[idx] += v11
+            player_wk11[idx, int(day_to_week[di])] += v11
+        daily_11.append(dmap_idx)
+
+    bundle = {
+        "played_mat": played_mat,
+        "played_lists": played_mat.tolist(),
+        "daily_11": daily_11,
+        "player_tot11": player_tot11,
+        "player_wk11": player_wk11,
+        "day_to_week": day_to_week,
+        "masks10": masks10,
+        "prio": prio,
+        "roster_cache": {},
+    }
+
+    straight_order = list(range(n_p))
+    hero_scored = sorted(
+        [(float(p["model_proj"]), -p["market_rank"], i) for i, p in enumerate(players)],
+        key=lambda t: (-t[0], -t[1], t[2]),
+    )
+    hero_order = [i for _, _, i in hero_scored]
+    pick_order = [
+        (rnd + 1, team)
+        for rnd in range(n_rounds)
+        for team in (range(n_teams - 1, -1, -1) if rnd % 2 == 1 else range(n_teams))
+    ]
+    rng = random.Random(seed)
+    roto_pts_l, field_roto_l, roto_diff_l = [], [], []
+
+    for slot in range(n_teams):
+        for _ in range(trials_per_slot):
+            opp_noisy = []
+            for _t in range(n_teams):
+                noisy = [(float(players[i]["adp"]) + rng.uniform(-adp_var, adp_var), i) for i in range(n_p)]
+                noisy.sort(key=lambda t: (t[0], t[1]))
+                opp_noisy.append([i for _, i in noisy])
+
+            taken = [False] * n_p
+            rosters = [[] for _ in range(n_teams)]
+            c_cnt = [0] * n_teams
+            m_sz = [0] * n_teams
+            for rnd, team in pick_order:
+                roster = rosters[team]
+                rem_after = n_rounds - len(roster) - 1
+                cur_c, cur_m = c_cnt[team], m_sz[team]
+                board = hero_order if team == slot else (straight_order if rnd == 1 else opp_noisy[team])
+                choice, new_m = c9._pick_legal_from_board(board, taken, roster, cur_c, cur_m, rem_after, masks7, is_c, max_centers)
+                taken[choice] = True
+                roster.append(choice)
+                if is_c[choice]:
+                    c_cnt[team] += 1
+                m_sz[team] = new_m
+
+            team_tot11 = np.zeros((n_teams, 11), dtype=np.float64)
+            team_wk11 = np.zeros((n_teams, n_wks, 11), dtype=np.float64)
+            for t in range(n_teams):
+                t11, w11, _bg = c9.score_roster_cat9_active(rosters[t], bundle)
+                team_tot11[t] = t11
+                team_wk11[t] = w11
+
+            roto, _h2he, _h2hm = c9.score_cat9_league(team_tot11, team_wk11, valid_wks)
+            field_roto = float(np.mean([roto[t] for t in range(n_teams) if t != slot]))
+            roto_pts_l.append(float(roto[slot]))
+            field_roto_l.append(field_roto)
+            roto_diff_l.append(float(roto[slot]) - field_roto)
+
+    return {
+        "drafts": len(roto_pts_l),
+        "weeks": n_wks,
+        "last_date": dates_sorted[-1],
+        "hero_roto": round(mean(roto_pts_l), 1),
+        "field_roto": round(mean(field_roto_l), 1),
+        "roto_diff": round(mean(roto_diff_l), 1),
     }
 
 
@@ -362,6 +502,8 @@ def build_all_cat9_seasons_payload(
                 "az": tl["final_cat_z"].get(aid, tl["final_zero_vec"]),
             })
 
+        sim_live = simulate_live_cat9_season(data / target_s, cands, w9) if is_live else None
+
         seasons_payload[target_s] = {
             "season": target_s,
             "split": split,
@@ -369,6 +511,7 @@ def build_all_cat9_seasons_payload(
             "peer_center": round(float(peer_center), 2),
             "sim_greedy": sim_by_season.get((target_s, "residual_unified")),
             "sim_wait": sim_by_season.get((target_s, "residual_wait")),
+            "sim_live": sim_live,
             "checkpoints": tl["checkpoints"],
             "ts": {
                 "top150_z": ts_top150_z,
@@ -872,12 +1015,20 @@ function renderSimHero() {
   const maxBar = Math.max(38, avgRotoW * 1.15);
 
   const cur = S.sim_greedy;
+  const live = S.sim_live;
   let seasonHtml = "";
   if (cur) {
     seasonHtml = `
       <div class="sim-hero-lbl">Selected Season (${S.season} &middot; ${cur.drafts || 720} drafts)</div>
       <div class="sim-hero-season-num pos">${cur.roto_win.toFixed(1)}% Roto &middot; ${cur.h2hm_win.toFixed(1)}% H2H-M</div>
       <div class="sim-hero-sub">H2H-Each <strong>${cur.h2he_win.toFixed(1)}%</strong> &middot; Roto <strong>${cur.roto_pts.toFixed(1)}/108</strong> (Avg Rk <strong>#${cur.roto_rk.toFixed(2)}</strong>)</div>
+    `;
+  } else if (live) {
+    const cls = live.roto_diff >= 0 ? "pos" : "neg";
+    seasonHtml = `
+      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; Live Draft vs. ADP)</div>
+      <div class="sim-hero-season-num ${cls}">${fmtSigned(live.roto_diff, 1)} Roto Pts</div>
+      <div class="sim-hero-sub">Avg Projected Draft <strong>${live.hero_roto.toFixed(1)}</strong> vs. Avg ADP Draft <strong>${live.field_roto.toFixed(1)}</strong> / 108 &middot; ${live.drafts} draft-only leagues (through G${S.max_step}, early sample)</div>
     `;
   } else {
     seasonHtml = `
@@ -930,8 +1081,11 @@ function selectSeason(seasonKey) {
 
   const simNote = document.getElementById("season-sim-note");
   const simG = S.sim_greedy;
+  const simL = S.sim_live;
   if (simG) {
     simNote.innerHTML = `<span title="720 draft-and-hold 12-team leagues blindly picking the top-ranked available player (baseline 12-team win rate = 8.3%; no trades or mid-season moves).">Draft-Only Sim (${simG.drafts} dr): <strong>${simG.roto_pts.toFixed(1)}</strong> Roto (${simG.roto_win.toFixed(1)}% Win) &middot; H2H-M <strong>${simG.h2hm_win.toFixed(1)}%</strong> Win <span class="muted">(vs 8.3% base)</span></span>`;
+  } else if (simL) {
+    simNote.innerHTML = `<span title="Early-season draft edge: average team drafted from this board vs. average ADP-drafted team across ${simL.drafts} draft-and-hold leagues so far (excluded from 8-yr completed-season win rate).">Live Draft vs. ADP (${simL.drafts} dr): <strong>${fmtSigned(simL.roto_diff, 1)} Roto Pts</strong> <span class="muted">(${simL.hero_roto.toFixed(1)} vs ${simL.field_roto.toFixed(1)} / 108)</span></span>`;
   } else {
     simNote.innerHTML = `Live Out-of-Sample Season (Zero Leakage)`;
   }
@@ -1010,11 +1164,17 @@ function renderKPIs() {
   const k4 = document.getElementById("kpi-sim");
   const k4s = document.getElementById("kpi-sim-sub");
   const simG = S.sim_greedy;
+  const simL = S.sim_live;
   if (simG) {
     document.getElementById("kpi-sim-lbl").textContent = `Draft-Only Sim Win% (${simG.drafts} dr)`;
     k4.innerHTML = `${simG.roto_win.toFixed(1)}% / ${simG.h2he_win.toFixed(1)}% / ${simG.h2hm_win.toFixed(1)}%`;
     k4.className = "stat-val pos";
     k4s.innerHTML = `Roto / H2H-E / H2H-M (vs <strong>8.3%</strong> 12T base &middot; Rk ${simG.roto_rk.toFixed(2)})`;
+  } else if (simL) {
+    document.getElementById("kpi-sim-lbl").textContent = `Live Draft vs. ADP (${simL.drafts} dr)`;
+    k4.innerHTML = `${fmtSigned(simL.roto_diff, 1)} Roto Pts`;
+    k4.className = "stat-val " + (simL.roto_diff >= 0 ? "pos" : "neg");
+    k4s.innerHTML = `Avg Draft <strong>${simL.hero_roto.toFixed(1)}</strong> vs. ADP <strong>${simL.field_roto.toFixed(1)}</strong> / 108 (early sample)`;
   } else {
     const allSims = APP.season_order.map(o => APP.seasons[o.season]?.sim_greedy).filter(Boolean);
     const nS = allSims.length || 1;

@@ -17,7 +17,9 @@ Usage:
 import argparse
 import json
 import math
+import random
 from collections import defaultdict
+from datetime import date
 from html import escape
 from pathlib import Path
 from statistics import mean, median
@@ -396,6 +398,192 @@ def build_live_2026_27_s2_cands(data, prior_s, prev2_s, births_prior, target_pro
     return s2_cands
 
 
+def simulate_live_points_season(folder: Path, scoring: dict, s2_cands: list, n_teams: int = 12, n_rounds: int = 13, trials_per_slot: int = 60, adp_var: float = 2.0, max_centers: int = 4, seed: int = 42):
+    """Run 720 Pure Greedy 12-team draft-and-hold leagues on the in-progress live season (total FPTS + weekly H2H)."""
+    if len(s2_cands) < n_teams * n_rounds:
+        return None
+    game_dates = {}
+    for g in de.read_csv(folder / "games.csv"):
+        if not de.regular_season_game(g):
+            continue
+        gid = g.get("game_id")
+        gd = (g.get("game_date") or "")[:10]
+        hs = de._safe_float(g.get("home_score"))
+        as_ = de._safe_float(g.get("away_score"))
+        if not gid or not gd or hs is None or as_ is None or (hs == 0 and as_ == 0):
+            continue
+        game_dates[gid] = gd
+
+    raw_daily = defaultdict(lambda: defaultdict(float))  # aid -> gd -> fpts
+    seen_dates = set()
+    for gid, aid, _name, stats, _pos, _starter, _tid in de.player_box_scores(folder, game_dates):
+        gd = game_dates[gid]
+        raw_daily[aid][gd] += de.score_box_stats(stats, scoring)
+        seen_dates.add(gd)
+
+    if not seen_dates:
+        return None
+    dates_sorted = sorted(seen_dates)
+    date_to_idx = {d: i for i, d in enumerate(dates_sorted)}
+    weeks_sorted = sorted({date.fromisoformat(d).isocalendar()[:2] for d in dates_sorted})
+    wk_to_idx = {wk: i for i, wk in enumerate(weeks_sorted)}
+    day_to_week = [wk_to_idx[date.fromisoformat(d).isocalendar()[:2]] for d in dates_sorted]
+    n_days, n_wks = len(dates_sorted), len(weeks_sorted)
+
+    players = sorted(s2_cands, key=lambda r: r["market_rank"])
+    n_p = len(players)
+    played_mat = np.zeros((n_p, n_days), dtype=np.uint8)
+    fpts_mat = np.zeros((n_p, n_days), dtype=np.float64)
+    player_tot = np.zeros(n_p, dtype=np.float64)
+    player_wk = np.zeros((n_p, n_wks), dtype=np.float64)
+    masks7, masks10, is_c, prio = [], [], [], []
+    for idx, p in enumerate(players):
+        ptup = p["positions"]
+        m7, m10 = de._pos_to_masks(ptup)
+        masks7.append(m7)
+        masks10.append(m10)
+        is_c.append(ptup[0] == "C")
+        dmap = raw_daily.get(p["athlete_id"], {})
+        gp = len(dmap)
+        tot = 0.0
+        for gd, pts in dmap.items():
+            di = date_to_idx[gd]
+            played_mat[idx, di] = 1
+            fpts_mat[idx, di] = pts
+            player_wk[idx, day_to_week[di]] += pts
+            tot += pts
+        player_tot[idx] = tot
+        prio.append((tot / gp) if gp > 0 else -99.0)
+
+    played_lists = played_mat.tolist()
+    fpts_lists = fpts_mat.tolist()
+    roster_cache = {}
+
+    def score_roster(roster):
+        key = tuple(sorted(roster))
+        cached = roster_cache.get(key)
+        if cached is not None:
+            return cached
+        ordered = sorted(roster, key=lambda idx: -prio[idx])
+        counts = played_mat[ordered].sum(axis=0)
+        crowded_days = np.flatnonzero(counts >= 5).tolist()
+        tot = float(player_tot[ordered].sum())
+        wk = player_wk[ordered].sum(axis=0).copy()
+        for d in crowded_days:
+            free_bits = 0x3FF
+            match_slot = None
+            filled = 0
+            w = day_to_week[d]
+            for idx in ordered:
+                if not played_lists[idx][d]:
+                    continue
+                if filled == 10:
+                    v = fpts_lists[idx][d]
+                    tot -= v
+                    wk[w] -= v
+                    continue
+                m = masks10[idx]
+                if match_slot is None:
+                    avail = m & free_bits
+                    if avail:
+                        free_bits ^= (avail & -avail)
+                        filled += 1
+                        continue
+                    match_slot = [-1] * 10
+                    filled = 0
+                    for j in ordered:
+                        if not played_lists[j][d]:
+                            continue
+                        if j == idx:
+                            break
+                        if de._dfs_match(j, match_slot, masks10, [0]):
+                            filled += 1
+                if filled < 10 and de._dfs_match(idx, match_slot, masks10, [0]):
+                    filled += 1
+                else:
+                    v = fpts_lists[idx][d]
+                    tot -= v
+                    wk[w] -= v
+        res = (tot, wk)
+        roster_cache[key] = res
+        return res
+
+    straight_order = list(range(n_p))
+    hero_scored = sorted(
+        [(float(p["model_proj"]), -p["market_rank"], i) for i, p in enumerate(players)],
+        key=lambda t: (-t[0], -t[1], t[2]),
+    )
+    hero_order = [i for _, _, i in hero_scored]
+    pick_order = [
+        (rnd + 1, team)
+        for rnd in range(n_rounds)
+        for team in (range(n_teams - 1, -1, -1) if rnd % 2 == 1 else range(n_teams))
+    ]
+    rng = random.Random(seed)
+    hero_tots, field_avgs, diffs = [], [], []
+    for slot in range(n_teams):
+        for _ in range(trials_per_slot):
+            opp_noisy = []
+            for _t in range(n_teams):
+                noisy = [(float(players[i]["adp"]) + rng.uniform(-adp_var, adp_var), i) for i in range(n_p)]
+                noisy.sort(key=lambda t: (t[0], t[1]))
+                opp_noisy.append([i for _, i in noisy])
+
+            taken = [False] * n_p
+            rosters = [[] for _ in range(n_teams)]
+            c_cnt = [0] * n_teams
+            m_sz = [0] * n_teams
+            for rnd, team in pick_order:
+                roster = rosters[team]
+                rem_after = n_rounds - len(roster) - 1
+                cur_c, cur_m = c_cnt[team], m_sz[team]
+                board = hero_order if team == slot else (straight_order if rnd == 1 else opp_noisy[team])
+                choice, new_m = None, cur_m
+                for idx in board:
+                    if taken[idx] or (is_c[idx] and cur_c >= max_centers):
+                        continue
+                    if cur_m + rem_after >= 7:
+                        choice = idx
+                        new_m = de.max_matching_7(roster + [idx], masks7) if cur_m < 7 else 7
+                        break
+                    cm = de.max_matching_7(roster + [idx], masks7)
+                    if cm + rem_after >= 7:
+                        choice, new_m = idx, cm
+                        break
+                if choice is None:
+                    choice = next(
+                        (idx for idx in board if not taken[idx] and not (is_c[idx] and cur_c >= max_centers)),
+                        next(idx for idx in board if not taken[idx]),
+                    )
+                    new_m = de.max_matching_7(roster + [choice], masks7)
+                taken[choice] = True
+                roster.append(choice)
+                if is_c[choice]:
+                    c_cnt[team] += 1
+                m_sz[team] = new_m
+
+            tots = [score_roster(rosters[t])[0] for t in range(n_teams)]
+            hero_tot = tots[slot]
+            field_tots = [tots[t] for t in range(n_teams) if t != slot]
+            field_avg = sum(field_tots) / len(field_tots)
+            hero_tots.append(hero_tot)
+            field_avgs.append(field_avg)
+            diffs.append(hero_tot - field_avg)
+
+    h_avg = mean(hero_tots)
+    f_avg = mean(field_avgs)
+    d_avg = mean(diffs)
+    return {
+        "drafts": len(diffs),
+        "weeks": n_wks,
+        "last_date": dates_sorted[-1],
+        "hero_fpts": round(h_avg, 1),
+        "field_fpts": round(f_avg, 1),
+        "diff": round(d_avg, 1),
+        "lift_pct": round(100.0 * d_avg / f_avg, 2) if f_avg else 0.0,
+    }
+
+
 def build_all_seasons_payload(data: Path, scoring_name: str = "default", min_train_season: str = "2016-17", cv_folds: int = 6, recency_halflife=None, sim_csv_override=None):
     _, scoring = de.resolve_scoring(scoring_name)
     seasons_dirs, season_data, births_cache, profiles_cache = de.load_all_completed_seasons(data, scoring)
@@ -571,6 +759,7 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default", min_tra
 
         sim_g = sim_by_season.get((target_s, "residual_unified"))
         sim_w = sim_by_season.get((target_s, "residual_wait"))
+        sim_live = simulate_live_points_season(data / target_s, scoring, s2_cands) if is_live else None
 
         seasons_payload[target_s] = {
             "season": target_s,
@@ -580,6 +769,7 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default", min_tra
             "peer_center": round(float(peer_center), 2),
             "sim_greedy": sim_g,
             "sim_wait": sim_w,
+            "sim_live": sim_live,
             "checkpoints": tl["checkpoints"],
             "ts": {
                 "t15_fpts": ts_t15_fpts_diff,
@@ -1562,6 +1752,7 @@ function renderSimHero() {
   const maxBar = Math.max(35, avgWin * 1.15);
 
   const cur = S.sim_greedy;
+  const live = S.sim_live;
   let seasonHtml = "";
   if (cur) {
     const cls = cur.diff >= 0 ? "pos" : "neg";
@@ -1569,6 +1760,13 @@ function renderSimHero() {
       <div class="sim-hero-lbl">Selected Season (${S.season} &middot; ${cur.drafts || 720} drafts)</div>
       <div class="sim-hero-season-num ${cls}">${cur.win_pct.toFixed(1)}% Win Rate</div>
       <div class="sim-hero-sub"><strong>${fmtSignedInt(cur.diff)} FPTS</strong> vs. field &middot; Avg Rank <strong>#${cur.rank.toFixed(2)}</strong> &middot; Top-4 <strong>${cur.top4_pct.toFixed(1)}%</strong></div>
+    `;
+  } else if (live) {
+    const cls = live.diff >= 0 ? "pos" : "neg";
+    seasonHtml = `
+      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; Live Draft vs. ADP)</div>
+      <div class="sim-hero-season-num ${cls}">${fmtSignedInt(live.diff)} FPTS <span style="font-size:15px;font-weight:700">(${fmtSigned(live.lift_pct, 1)}%)</span></div>
+      <div class="sim-hero-sub">Avg Projected Draft <strong>${fmtInt(live.hero_fpts)}</strong> vs. Avg ADP Draft <strong>${fmtInt(live.field_fpts)}</strong> FPTS &middot; ${live.drafts} draft-only leagues (through G${S.max_step}, early sample)</div>
     `;
   } else {
     seasonHtml = `
@@ -1611,9 +1809,12 @@ function renderSeasonBar() {
 
   let simHtml = "";
   const simG = S.sim_greedy;
+  const simL = S.sim_live;
   if (simG) {
     const nDr = simG.drafts || 720;
     simHtml = `<span title="720 draft-and-hold 12-team leagues blindly picking the top-ranked available player (baseline 12-team win rate = 8.3%; no trades or mid-season moves).">Draft-Only Sim (${nDr} dr): <strong>${fmtSignedInt(simG.diff)} FPTS</strong> &middot; ${simG.win_pct.toFixed(1)}% Win <span class="muted">(vs 8.3% base)</span></span>`;
+  } else if (simL) {
+    simHtml = `<span title="Early-season draft edge: average team drafted from this board vs. average ADP-drafted team across ${simL.drafts} draft-and-hold leagues so far (excluded from multi-year completed-season win rate).">Live Draft vs. ADP (${simL.drafts} dr): <strong>${fmtSignedInt(simL.diff)} FPTS</strong> <span class="muted">(${fmtSigned(simL.lift_pct, 1)}% &middot; ${fmtInt(simL.hero_fpts)} vs ${fmtInt(simL.field_fpts)})</span></span>`;
   } else {
     simHtml = `Live season &middot; ${S.max_step} team-games`;
   }
