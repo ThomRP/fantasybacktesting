@@ -67,11 +67,86 @@ def load_season_timeline(folder: Path, scoring: dict, is_live: bool = False):
     dates_sorted = sorted(games_per_date)
     date_to_idx = {d: i for i, d in enumerate(dates_sorted)}
 
-    # Collect per-player box scores keyed by date_idx
-    # Use list of (date_idx, pts) per player (a player plays at most 1 game per date)
+    # Collect per-player box scores keyed by date_idx (or exact team-game number 1..min_team_games when is_live)
+    raw_boxes = list(de.player_box_scores(folder, game_dates))
+    if is_live and raw_boxes:
+        team_gids = defaultdict(set)
+        for gid, _aid, _name, _stats, _pos, _starter, tid in raw_boxes:
+            if tid:
+                team_gids[tid].add(gid)
+        team_game_num = {}
+        for tid, gids in team_gids.items():
+            for gnum, gid in enumerate(sorted(gids, key=lambda x: (game_dates[x], x)), 1):
+                team_game_num[(tid, gid)] = gnum
+        min_tg = max(1, min(len(gids) for gids in team_gids.values()))
+        max_step = min_tg
+        step_events = [defaultdict(lambda: [0, 0.0]) for _ in range(max_step)]
+        player_per_s = defaultdict(lambda: defaultdict(lambda: [0, 0.0]))
+        step_dates = [""] * max_step
+        for gid, aid, _name, stats, _pos, _starter, tid in raw_boxes:
+            gnum = team_game_num.get((tid, gid))
+            if gnum is None or gnum > min_tg:
+                continue
+            s_idx = gnum - 1
+            pts = de.score_box_stats(stats, scoring)
+            step_events[s_idx][aid][0] += 1
+            step_events[s_idx][aid][1] += pts
+            player_per_s[aid][s_idx][0] += 1
+            player_per_s[aid][s_idx][1] += pts
+            gd = game_dates[gid]
+            if gd > step_dates[s_idx]:
+                step_dates[s_idx] = gd
+        player_step_sparse = {
+            aid: [[s_idx, val[0], round(val[1], 1)] for s_idx, val in sorted(smap.items())]
+            for aid, smap in player_per_s.items()
+        }
+        cum_gp = defaultdict(int)
+        cum_pts = defaultdict(float)
+        checkpoints = []
+        step_adj_by_id = []
+        for s_idx in range(max_step):
+            for aid, (gp, pts) in step_events[s_idx].items():
+                cum_gp[aid] += gp
+                cum_pts[aid] += pts
+            avg_g = float(s_idx + 1)
+            reg_g = int(15 * (s_idx + 1))
+            ref_g = max(1.0, de.REF_GAMES * min(avg_g, de.SEASON_GAMES) / de.SEASON_GAMES)
+            season_pct = round(100.0 * avg_g / de.SEASON_GAMES, 1)
+            min_qual = max(1, int(round(20.0 * (ref_g / de.REF_GAMES))))
+            qual_raw = sorted((cum_pts[aid] / g for aid, g in cum_gp.items() if g >= min_qual), reverse=True)
+            if not qual_raw:
+                qual_raw = sorted((cum_pts[aid] / g for aid, g in cum_gp.items() if g > 0), reverse=True)
+            repl_fppg = qual_raw[min(149, len(qual_raw) - 1)] if qual_raw else 20.0
+            waiver = de.WAIVER_FACTOR * repl_fppg
+            adj_by_id = {}
+            for aid, g in cum_gp.items():
+                raw = cum_pts[aid] / g
+                eff_g = min(float(g), ref_g)
+                adj_by_id[aid] = (eff_g * raw + (ref_g - eff_g) * waiver) / ref_g
+            adj_lb = sorted(adj_by_id.values(), reverse=True)
+            top150_cut = adj_lb[min(149, len(adj_lb) - 1)] if adj_lb else waiver
+            checkpoints.append({
+                "g": s_idx + 1,
+                "date": step_dates[s_idx],
+                "reg": reg_g,
+                "avg_g": round(avg_g, 1),
+                "pct": season_pct,
+                "ref_g": round(ref_g, 2),
+                "waiver": round(waiver, 2),
+                "t150_cut": round(top150_cut, 2),
+                "anchors": _sample_anchors(adj_lb),
+            })
+            step_adj_by_id.append((adj_by_id, adj_lb, waiver, dict(cum_pts)))
+        return {
+            "max_step": max_step,
+            "checkpoints": checkpoints,
+            "player_step_sparse": player_step_sparse,
+            "step_adj_by_id": step_adj_by_id,
+        }
+
     player_daily = defaultdict(lambda: defaultdict(lambda: [0, 0.0]))  # aid -> di -> [gp, pts]
     seen_game_dates = set()
-    for gid, aid, _name, stats, _pos, _starter, _tid in de.player_box_scores(folder, game_dates):
+    for gid, aid, _name, stats, _pos, _starter, _tid in raw_boxes:
         gd = game_dates[gid]
         di = date_to_idx[gd]
         pts = de.score_box_stats(stats, scoring)
@@ -414,9 +489,24 @@ def simulate_live_points_season(folder: Path, scoring: dict, s2_cands: list, n_t
             continue
         game_dates[gid] = gd
 
+    raw_boxes = list(de.player_box_scores(folder, game_dates))
+    team_gids = defaultdict(set)
+    for gid, _aid, _name, _stats, _pos, _starter, tid in raw_boxes:
+        if tid:
+            team_gids[tid].add(gid)
+    if not team_gids:
+        return None
+    team_game_num = {}
+    for tid, gids in team_gids.items():
+        for gnum, gid in enumerate(sorted(gids, key=lambda x: (game_dates[x], x)), 1):
+            team_game_num[(tid, gid)] = gnum
+    min_tg = max(1, min(len(gids) for gids in team_gids.values()))
+
     raw_daily = defaultdict(lambda: defaultdict(float))  # aid -> gd -> fpts
     seen_dates = set()
-    for gid, aid, _name, stats, _pos, _starter, _tid in de.player_box_scores(folder, game_dates):
+    for gid, aid, _name, stats, _pos, _starter, tid in raw_boxes:
+        if team_game_num.get((tid, gid), 999) > min_tg:
+            continue
         gd = game_dates[gid]
         raw_daily[aid][gd] += de.score_box_stats(stats, scoring)
         seen_dates.add(gd)
@@ -576,6 +666,7 @@ def simulate_live_points_season(folder: Path, scoring: dict, s2_cands: list, n_t
     return {
         "drafts": len(diffs),
         "weeks": n_wks,
+        "min_games": min_tg,
         "last_date": dates_sorted[-1],
         "hero_fpts": round(h_avg, 1),
         "field_fpts": round(f_avg, 1),
@@ -1292,23 +1383,37 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .call-agree { color: var(--muted); background: var(--card-soft); border-color: var(--border); font-weight: 600; }
 
   /* Plain-English Explainer Box */
+  .title-block { display: flex; flex-direction: column; gap: 3px; }
+  .page-tagline { font-size: 13px; color: var(--muted); font-weight: 500; }
+
+  .intro-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 14px;
+    align-items: start;
+  }
+  @media (max-width: 860px) { .intro-cards { grid-template-columns: 1fr; } }
   .intro-box {
     background: var(--card);
-    border: 1px solid var(--accent-bd);
+    border: 1px solid var(--border);
     border-left: 4px solid var(--accent);
     border-radius: 12px;
-    padding: 13px 16px;
-    margin-bottom: 14px;
+    padding: 11px 14px;
     box-shadow: var(--shadow);
   }
+  .intro-box.does { border-left-color: var(--pos); }
+  .intro-box.doesnt { border-left-color: var(--neg); }
   .intro-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+    cursor: pointer;
+    user-select: none;
   }
   .intro-title {
-    font-size: 13.5px;
+    font-size: 13px;
     font-weight: 700;
     color: var(--ink);
   }
@@ -1316,6 +1421,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     color: var(--accent);
     margin-right: 6px;
   }
+  .intro-box.does .intro-title span { color: var(--pos); }
+  .intro-box.doesnt .intro-title span { color: var(--neg); }
   .intro-toggle {
     font-size: 11.5px;
     font-weight: 600;
@@ -1323,30 +1430,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     background: var(--card-soft);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 3px 9px;
+    padding: 2px 8px;
     cursor: pointer;
+    flex-shrink: 0;
   }
   .intro-toggle:hover { color: var(--accent); border-color: var(--accent-bd); }
-  .intro-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-    gap: 14px 20px;
+  .intro-body {
     margin-top: 10px;
     padding-top: 10px;
     border-top: 1px solid var(--border);
-  }
-  .intro-box.collapsed .intro-grid { display: none; }
-  .intro-step-title {
-    font-size: 12.5px;
-    font-weight: 700;
-    color: var(--ink);
-    margin-bottom: 3px;
-  }
-  .intro-step-body {
     font-size: 12.5px;
     color: var(--ink-2);
-    line-height: 1.45;
+    line-height: 1.48;
   }
+  .intro-box.collapsed .intro-body { display: none; }
 
   /* Prominent Simulated Win-Rate Banner */
   .sim-hero {
@@ -1455,40 +1552,42 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <div class="wrap">
   <header>
-    <div class="title-row">
-      <h1 id="page-title">2026&ndash;27 ADP-Based Pre-Draft Projections</h1>
-      <span class="fmt-pill">POINTS</span>
-      <span class="split-badge live" id="split-badge">LIVE</span>
+    <div class="title-block">
+      <div class="title-row">
+        <h1 id="page-title">2026&ndash;27 ADP-Based Pre-Draft Projections</h1>
+        <span class="fmt-pill">POINTS</span>
+        <span class="split-badge live" id="split-badge">LIVE</span>
+      </div>
+      <div class="page-tagline">Pre-draft player projections built to beat consensus ADP on average &mdash; tested out-of-sample below.</div>
     </div>
     <div class="header-meta" id="header-meta"></div>
   </header>
 
   <section class="sim-hero" id="sim-hero"></section>
 
-  <section class="intro-box collapsed" id="intro-box">
-    <div class="intro-head">
-      <div class="intro-title"><span>&#9679;</span>Why This Exists, What It Does &amp; What It Doesn&rsquo;t Do</div>
-      <button class="intro-toggle" id="intro-toggle">Show</button>
-    </div>
-    <div class="intro-grid">
-      <div>
-        <div class="intro-step-title">Why This Exists (And Why Beating ADP Is Possible)</div>
-        <div class="intro-step-body">Fantasy leagues are actually <strong>well projected in general</strong>&mdash;consensus ADP already gets most players roughly right, and ignoring ADP to guess from scratch loses badly. The edge comes from repeatable <strong>human error and biases on a small group of players</strong>: overpaying for rookie hype, aging/injury-prone names, and hot shooting streaks while sleeping on durable, rising starters. Avoiding a few landmines and hitting a few undervalued targets is what creates league-winning teams.</div>
+  <div class="intro-cards">
+    <section class="intro-box why collapsed">
+      <div class="intro-head">
+        <div class="intro-title"><span>&#9679;</span>Why This Exists</div>
+        <button class="intro-toggle">Show</button>
       </div>
-      <div>
-        <div class="intro-step-title">What This Board Does</div>
-        <div class="intro-step-body">Publishes <strong>ADP-based pre-draft player projections</strong> on a full-season 65-game scale (treating missed games as a waiver-wire replacement so reliability counts). It gives you sharper pre-draft player values&mdash;your draft-day tactics (when to wait on targets, positional runs) are completely up to you.</div>
+      <div class="intro-body">Fantasy leagues are already <strong>well projected in general</strong>&mdash;consensus ADP gets most players roughly right, and throwing it away to guess from scratch loses badly. The edge comes from repeatable <strong>human biases on a small group of players</strong>: overpaying for rookie hype, aging/injury-prone names, and hot streaks while overlooking durable, rising starters. Avoiding a few landmines and hitting a few undervalued targets is what creates league-winning teams.</div>
+    </section>
+    <section class="intro-box does collapsed">
+      <div class="intro-head">
+        <div class="intro-title"><span>&#9679;</span>What This Board Is</div>
+        <button class="intro-toggle">Show</button>
       </div>
-      <div>
-        <div class="intro-step-title">What It Doesn&rsquo;t Do</div>
-        <div class="intro-step-body">It does <strong>not</strong> consider mid-season moves, waiver pickups, trades, mid-season injuries, or coaching/rotation changes after Opening Night, and it is not an explicit draft script. This is purely a way to get an edge on draft day&mdash;the rest of the season is up to the manager.</div>
+      <div class="intro-body"><strong>Pre-draft player projections</strong> built on top of ADP (scored on a full-season 65-game reliability scale) that we believe outperform consensus ADP on average&mdash;backed by out-of-sample historical results and live tracking below. Green <strong style="color:var(--pos)">Edge</strong> highlights players we project higher than ADP; red highlights players we project lower.</div>
+    </section>
+    <section class="intro-box doesnt collapsed">
+      <div class="intro-head">
+        <div class="intro-title"><span>&#9679;</span>What It Doesn&rsquo;t Cover</div>
+        <button class="intro-toggle">Show</button>
       </div>
-      <div>
-        <div class="intro-step-title">How to Read the Table &amp; Replay</div>
-        <div class="intro-step-body">Green <strong style="color:var(--pos)">Edge</strong> and <strong style="color:var(--pos)">+&Delta;Rk</strong> highlight players this board projects higher than ADP; red highlights fades. Use the replay slider to scrub through any historical or live season and watch how those pre-draft calls played out game by game.</div>
-      </div>
-    </div>
-  </section>
+      <div class="intro-body">Anything after draft day&mdash;<strong>no</strong> waiver pickups, trades, mid-season injuries, or coaching/rotation changes. It is strictly a pre-draft projection to help you leave the draft with a better roster; managing the season is up to you.</div>
+    </section>
+  </div>
 
   <div class="season-bar" id="season-bar"></div>
 
@@ -1764,9 +1863,9 @@ function renderSimHero() {
   } else if (live) {
     const cls = live.diff >= 0 ? "pos" : "neg";
     seasonHtml = `
-      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; Live Draft vs. ADP)</div>
+      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; Live Draft vs. ADP &middot; ${live.min_games || S.max_step} Equalized G)</div>
       <div class="sim-hero-season-num ${cls}">${fmtSignedInt(live.diff)} FPTS <span style="font-size:15px;font-weight:700">(${fmtSigned(live.lift_pct, 1)}%)</span></div>
-      <div class="sim-hero-sub">Avg Projected Draft <strong>${fmtInt(live.hero_fpts)}</strong> vs. Avg ADP Draft <strong>${fmtInt(live.field_fpts)}</strong> FPTS &middot; ${live.drafts} draft-only leagues (through G${S.max_step}, early sample)</div>
+      <div class="sim-hero-sub">Avg Projected Draft <strong>${fmtInt(live.hero_fpts)}</strong> vs. Avg ADP Draft <strong>${fmtInt(live.field_fpts)}</strong> FPTS &middot; ${live.drafts} draft-only leagues (first ${live.min_games || S.max_step} games/team, early sample)</div>
     `;
   } else {
     seasonHtml = `
@@ -2141,10 +2240,13 @@ document.getElementById("edge-chart").addEventListener("click", e => {
   document.getElementById("game-slider").value = state.step + 1;
   renderAll();
 });
-document.getElementById("intro-toggle").addEventListener("click", e => {
-  const box = document.getElementById("intro-box");
-  const collapsed = box.classList.toggle("collapsed");
-  e.currentTarget.textContent = collapsed ? "Show" : "Hide";
+document.querySelectorAll(".intro-box .intro-head").forEach(head => {
+  head.addEventListener("click", () => {
+    const box = head.closest(".intro-box");
+    const collapsed = box.classList.toggle("collapsed");
+    const btn = box.querySelector(".intro-toggle");
+    if (btn) btn.textContent = collapsed ? "Show" : "Hide";
+  });
 });
 document.getElementById("guide-toggle").addEventListener("click", e => {
   const drawer = document.getElementById("guide-drawer");

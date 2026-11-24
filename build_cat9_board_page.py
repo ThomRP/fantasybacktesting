@@ -65,9 +65,75 @@ def load_cat9_timeline(folder: Path, w9: np.ndarray, is_live: bool = False):
     dates_all = sorted(games_per_date)
     date_to_idx = {d: i for i, d in enumerate(dates_all)}
 
+    raw_boxes = list(de.player_box_scores(folder, game_dates))
+    if is_live and raw_boxes:
+        team_gids = defaultdict(set)
+        for gid, _aid, _name, _stats, _pos, _starter, tid in raw_boxes:
+            if tid:
+                team_gids[tid].add(gid)
+        team_game_num = {}
+        for tid, gids in team_gids.items():
+            for gnum, gid in enumerate(sorted(gids, key=lambda x: (game_dates[x], x)), 1):
+                team_game_num[(tid, gid)] = gnum
+        min_tg = max(1, min(len(gids) for gids in team_gids.values()))
+        max_step = min_tg
+        step_events = [defaultdict(lambda: [0, np.zeros(11, dtype=np.float64)]) for _ in range(max_step)]
+        step_dates = [""] * max_step
+        for gid, aid, _name, stats, _pos, _starter, tid in raw_boxes:
+            gnum = team_game_num.get((tid, gid))
+            if gnum is None or gnum > min_tg:
+                continue
+            s_idx = gnum - 1
+            vals = np.array([float(stats.get(k) or 0.0) for k in c9.STAT_KEYS_11], dtype=np.float64)
+            slot = step_events[s_idx][aid]
+            slot[0] += 1
+            slot[1] += vals
+            gd = game_dates[gid]
+            if gd > step_dates[s_idx]:
+                step_dates[s_idx] = gd
+        cum_gp = defaultdict(int)
+        cum_11 = defaultdict(lambda: np.zeros(11, dtype=np.float64))
+        checkpoints = []
+        step_z_by_id = []
+        final_cat_z = {}
+        final_zero_vec = [0.0] * 9
+        for s_idx in range(max_step):
+            for aid, (gp, vals) in step_events[s_idx].items():
+                cum_gp[aid] += gp
+                cum_11[aid] += vals
+            avg_g = float(s_idx + 1)
+            frac = min(1.0, avg_g / 82.0)
+            min_qual = max(1, int(round(20.0 * frac)))
+            zinfo = c9.compute_cat9_zscores(cum_11, cum_gp, top_pool_n=180, min_qual_games=min_qual)
+            z_scores = {aid: float(vec @ w9) for aid, vec in zinfo["z_tot"].items()}
+            zero_z = float(zinfo["zero_tot_vec"] @ w9)
+            z_lb = sorted(z_scores.values(), reverse=True)
+            t150_cut = z_lb[min(149, len(z_lb) - 1)] if z_lb else zero_z
+            checkpoints.append({
+                "g": s_idx + 1,
+                "date": step_dates[s_idx],
+                "reg": int(15 * (s_idx + 1)),
+                "avg_g": round(avg_g, 1),
+                "pct": round(100.0 * frac, 1),
+                "zero_z": round(zero_z, 2),
+                "t150_cut": round(t150_cut, 2),
+                "anchors": _sample_anchors(z_lb),
+            })
+            step_z_by_id.append((z_scores, z_lb, zero_z, dict(cum_gp)))
+            if s_idx == max_step - 1:
+                final_cat_z = {aid: [round(float(x), 2) for x in vec] for aid, vec in zinfo["z_tot"].items()}
+                final_zero_vec = [round(float(x), 2) for x in zinfo["zero_tot_vec"]]
+        return {
+            "max_step": max_step,
+            "checkpoints": checkpoints,
+            "step_z_by_id": step_z_by_id,
+            "final_cat_z": final_cat_z,
+            "final_zero_vec": final_zero_vec,
+        }
+
     player_daily = defaultdict(dict)  # aid -> di -> (gp, ndarray(11))
     seen_dates = set()
-    for gid, aid, _name, stats, _pos, _starter, _tid in de.player_box_scores(folder, game_dates):
+    for gid, aid, _name, stats, _pos, _starter, _tid in raw_boxes:
         gd = game_dates[gid]
         di = date_to_idx[gd]
         vals = np.array([float(stats.get(k) or 0.0) for k in c9.STAT_KEYS_11], dtype=np.float64)
@@ -190,11 +256,26 @@ def simulate_live_cat9_season(folder: Path, cands: list, w9: np.ndarray, n_teams
             continue
         game_dates[gid] = gd
 
+    raw_boxes = list(de.player_box_scores(folder, game_dates))
+    team_gids = defaultdict(set)
+    for gid, _aid, _name, _stats, _pos, _starter, tid in raw_boxes:
+        if tid:
+            team_gids[tid].add(gid)
+    if not team_gids:
+        return None
+    team_game_num = {}
+    for tid, gids in team_gids.items():
+        for gnum, gid in enumerate(sorted(gids, key=lambda x: (game_dates[x], x)), 1):
+            team_game_num[(tid, gid)] = gnum
+    min_tg = max(1, min(len(gids) for gids in team_gids.values()))
+
     raw_daily = defaultdict(dict)  # aid -> gd -> ndarray(11)
     p_tot = defaultdict(lambda: np.zeros(11, dtype=np.float64))
     p_g = defaultdict(int)
     seen_dates = set()
-    for gid, aid, _name, stats, _pos, _starter, _tid in de.player_box_scores(folder, game_dates):
+    for gid, aid, _name, stats, _pos, _starter, tid in raw_boxes:
+        if team_game_num.get((tid, gid), 999) > min_tg:
+            continue
         gd = game_dates[gid]
         vals = np.array([float(stats.get(k) or 0.0) for k in c9.STAT_KEYS_11], dtype=np.float64)
         prev = raw_daily[aid].get(gd)
@@ -306,6 +387,7 @@ def simulate_live_cat9_season(folder: Path, cands: list, w9: np.ndarray, n_teams
     return {
         "drafts": len(roto_pts_l),
         "weeks": n_wks,
+        "min_games": min_tg,
         "last_date": dates_sorted[-1],
         "hero_roto": round(mean(roto_pts_l), 1),
         "field_roto": round(mean(field_roto_l), 1),
@@ -594,16 +676,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .header-meta { font-size: 13px; color: var(--muted); background: var(--card); border: 1px solid var(--border); border-radius: 999px; padding: 5px 13px; box-shadow: var(--shadow); }
   .header-meta strong { color: var(--ink); }
 
-  .intro-box { background: var(--card); border: 1px solid var(--accent-bd); border-left: 4px solid var(--accent); border-radius: 12px; padding: 13px 16px; margin-bottom: 14px; box-shadow: var(--shadow); }
-  .intro-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-  .intro-title { font-size: 13.5px; font-weight: 700; color: var(--ink); }
+  .title-block { display: flex; flex-direction: column; gap: 3px; }
+  .page-tagline { font-size: 13px; color: var(--muted); font-weight: 500; }
+
+  .intro-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; align-items: start; }
+  @media (max-width: 900px) { .intro-cards { grid-template-columns: 1fr; } }
+  .intro-box { background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 12px; padding: 11px 14px; box-shadow: var(--shadow); }
+  .intro-box.does { border-left-color: var(--pos); }
+  .intro-box.doesnt { border-left-color: var(--neg); }
+  .intro-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; user-select: none; }
+  .intro-title { font-size: 13px; font-weight: 700; color: var(--ink); }
   .intro-title span { color: var(--accent); margin-right: 6px; }
-  .intro-toggle { font-size: 11.5px; font-weight: 600; color: var(--muted); background: var(--card-soft); border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+  .intro-box.does .intro-title span { color: var(--pos); }
+  .intro-box.doesnt .intro-title span { color: var(--neg); }
+  .intro-toggle { font-size: 11.5px; font-weight: 600; color: var(--muted); background: var(--card-soft); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; cursor: pointer; flex-shrink: 0; }
   .intro-toggle:hover { color: var(--accent); border-color: var(--accent-bd); }
-  .intro-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 14px 20px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-  .intro-box.collapsed .intro-grid { display: none; }
-  .intro-step-title { font-size: 12.5px; font-weight: 700; color: var(--ink); margin-bottom: 3px; }
-  .intro-step-body { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+  .intro-body { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--ink-2); line-height: 1.48; }
+  .intro-box.collapsed .intro-body { display: none; }
 
   .sim-hero {
     background: linear-gradient(135deg, #ffffff 0%, #f0fdf4 100%);
@@ -743,40 +832,42 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <div class="wrap">
   <header>
-    <div class="title-row">
-      <h1 id="page-title">2026&ndash;27 ADP-Based Pre-Draft Projections</h1>
-      <span class="cat9-pill">9-CAT (ROTO + H2H)</span>
-      <span class="split-badge live" id="split-badge">LIVE</span>
+    <div class="title-block">
+      <div class="title-row">
+        <h1 id="page-title">2026&ndash;27 ADP-Based Pre-Draft Projections</h1>
+        <span class="cat9-pill">9-CAT (ROTO + H2H)</span>
+        <span class="split-badge live" id="split-badge">LIVE</span>
+      </div>
+      <div class="page-tagline">Pre-draft player projections built to beat consensus ADP on average &mdash; tested out-of-sample below.</div>
     </div>
     <div class="header-meta" id="header-meta"></div>
   </header>
 
   <section class="sim-hero" id="sim-hero"></section>
 
-  <section class="intro-box collapsed" id="intro-box">
-    <div class="intro-head">
-      <div class="intro-title"><span>&#9679;</span>Why This Exists, What It Does &amp; What It Doesn&rsquo;t Do</div>
-      <button class="intro-toggle" id="intro-toggle">Show</button>
-    </div>
-    <div class="intro-grid">
-      <div>
-        <div class="intro-step-title">Why This Exists (And Why Beating ADP Is Possible)</div>
-        <div class="intro-step-body">Fantasy leagues are actually <strong>well projected in general</strong>&mdash;consensus ADP gets most players roughly right, and throwing it away to guess from scratch loses badly. The edge comes from repeatable <strong>human error and biases on a small group of players</strong>: overpaying for rookie hype, aging/injury-prone names, and flashy scoring while overlooking durable, efficient multi-category starters. Avoiding a few landmines and hitting a few undervalued targets is what builds league-winning teams.</div>
+  <div class="intro-cards">
+    <section class="intro-box why collapsed">
+      <div class="intro-head">
+        <div class="intro-title"><span>&#9679;</span>Why This Exists</div>
+        <button class="intro-toggle">Show</button>
       </div>
-      <div>
-        <div class="intro-step-title">What This Board Does</div>
-        <div class="intro-step-body">Publishes <strong>balanced, ADP-based pre-draft 9-Cat projections</strong> (Z-scores across PTS, REB, AST, STL, BLK, 3PM, volume-weighted FG%/FT%, and 0.75&times; TO) that power both Roto and H2H. Optional <strong>Punt chips</strong> let punters re-rank as a reference lens alongside ADP&mdash;your draft-day tactics are up to you.</div>
+      <div class="intro-body">Fantasy leagues are already <strong>well projected in general</strong>&mdash;consensus ADP gets most players roughly right, and throwing it away to guess from scratch loses badly. The edge comes from repeatable <strong>human biases on a small group of players</strong>: overpaying for rookie hype, aging/injury-prone names, and flashy scoring while overlooking durable, efficient multi-category starters. Avoiding a few landmines and hitting a few undervalued targets is what creates league-winning teams.</div>
+    </section>
+    <section class="intro-box does collapsed">
+      <div class="intro-head">
+        <div class="intro-title"><span>&#9679;</span>What This Board Is</div>
+        <button class="intro-toggle">Show</button>
       </div>
-      <div>
-        <div class="intro-step-title">What It Doesn&rsquo;t Do</div>
-        <div class="intro-step-body">It does <strong>not</strong> consider mid-season moves, waiver streaming, trades, mid-season injuries, or coaching/rotation changes after Opening Night, and it is not an explicit draft script. This is purely a way to get an edge on draft day&mdash;the rest of the season is up to the manager.</div>
+      <div class="intro-body"><strong>Balanced pre-draft 9-Cat projections</strong> built on top of ADP (Z-scores across all 9 categories, 0.75&times; TO) that we believe outperform consensus ADP on average in both Roto and H2H&mdash;backed by out-of-sample historical results and live tracking below. Green <strong style="color:var(--pos)">Edge</strong> marks players projected higher than ADP, and optional <strong>Punt chips</strong> let you re-rank instantly if you punt a category.</div>
+    </section>
+    <section class="intro-box doesnt collapsed">
+      <div class="intro-head">
+        <div class="intro-title"><span>&#9679;</span>What It Doesn&rsquo;t Cover</div>
+        <button class="intro-toggle">Show</button>
       </div>
-      <div>
-        <div class="intro-step-title">How to Read Z-Scores &amp; Replay</div>
-        <div class="intro-step-body">Each category is shown in standard deviations (<strong>Z-score</strong>) vs. the Top-180 pool: green (<code>+1.0</code>+) is an elite strength, red (<code>-1.0</code>) is a drag. Green <strong style="color:var(--pos)">Edge</strong> marks players projected ahead of ADP; scrub the slider below to replay any season game by game.</div>
-      </div>
-    </div>
-  </section>
+      <div class="intro-body">Anything after draft day&mdash;<strong>no</strong> waiver streaming, trades, mid-season injuries, or coaching/rotation changes. It is strictly a pre-draft projection to help you leave the draft with a better roster; managing the season is up to you.</div>
+    </section>
+  </div>
 
   <section class="season-bar">
     <div class="season-group">
@@ -1026,9 +1117,9 @@ function renderSimHero() {
   } else if (live) {
     const cls = live.roto_diff >= 0 ? "pos" : "neg";
     seasonHtml = `
-      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; Live Draft vs. ADP)</div>
+      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; Live Draft vs. ADP &middot; ${live.min_games || S.max_step} Equalized G)</div>
       <div class="sim-hero-season-num ${cls}">${fmtSigned(live.roto_diff, 1)} Roto Pts</div>
-      <div class="sim-hero-sub">Avg Projected Draft <strong>${live.hero_roto.toFixed(1)}</strong> vs. Avg ADP Draft <strong>${live.field_roto.toFixed(1)}</strong> / 108 &middot; ${live.drafts} draft-only leagues (through G${S.max_step}, early sample)</div>
+      <div class="sim-hero-sub">Avg Projected Draft <strong>${live.hero_roto.toFixed(1)}</strong> vs. Avg ADP Draft <strong>${live.field_roto.toFixed(1)}</strong> / 108 &middot; ${live.drafts} draft-only leagues (first ${live.min_games || S.max_step} games/team, early sample)</div>
     `;
   } else {
     seasonHtml = `
@@ -1352,11 +1443,14 @@ function renderStep() {
 }
 
 // Wire controls
-document.getElementById("intro-toggle").onclick = () => {
-  const box = document.getElementById("intro-box");
-  box.classList.toggle("collapsed");
-  document.getElementById("intro-toggle").textContent = box.classList.contains("collapsed") ? "Show" : "Hide";
-};
+document.querySelectorAll(".intro-box .intro-head").forEach(head => {
+  head.onclick = () => {
+    const box = head.closest(".intro-box");
+    box.classList.toggle("collapsed");
+    const btn = box.querySelector(".intro-toggle");
+    if (btn) btn.textContent = box.classList.contains("collapsed") ? "Show" : "Hide";
+  };
+});
 document.getElementById("play-btn").onclick = togglePlay;
 document.getElementById("btn-start").onclick = () => { stopPlay(); state.step = 0; renderStep(); };
 document.getElementById("btn-end").onclick = () => { stopPlay(); state.step = APP.seasons[state.season].max_step - 1; renderStep(); };
