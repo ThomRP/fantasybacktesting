@@ -138,7 +138,7 @@ VET_STATS_AVAIL_FEATURES = (
 ROOKIE_STATS_FEATURES = (
     "log_draft_pick", "is_top3_pick", "is_lottery_pick", "is_undrafted",
     "is_redshirt", "rookie_age", "height_inches",
-    "team_top8_avg_age", "team_prior_win_pct", "team_vet30_min_share",
+    "team_top8_avg_age", "team_vegas_win_pct", "team_vet30_min_share",
     "team_prior_top150_count",
 )
 
@@ -175,9 +175,16 @@ VET_RES_AVAIL_FEATURES = (
 
 ROOKIE_RESIDUAL_FEATURES = (
     "log_draft_pick", "log_adp", "mkt_expected_adj_fppg", "adp_minus_pick_expected",
-    "is_redshirt", "rookie_age", "team_top8_avg_age", "team_prior_win_pct",
+    "is_redshirt", "rookie_age", "team_top8_avg_age", "team_vegas_win_pct",
     "team_vet30_min_share", "team_prior_top150_count", "espn_vs_avg",
 )
+
+# --- Separable Advanced Impact & Usage Extension (opt-in via --advanced-stats) ---
+VET_STATS_ADV_FEATURES = ("prior_bpm", "prior_vorp", "prior_on_off", "prior_usg_pct")
+VET_STATS_MPG_ADV_FEATURES = ("prior_bpm", "prior_on_off", "prior_usg_pct")
+VET_STATS_FPPM_ADV_FEATURES = ("prior_on_off", "prior_usg_pct")
+VET_RES_MPG_ADV_FEATURES = ("prior_usg_pct",)
+VET_RES_FPPM_ADV_FEATURES = ("prior_usg_pct",)
 
 BACKTEST_STRATEGIES = (
     "market",
@@ -688,6 +695,153 @@ def parse_draft_info_from_profiles(profiles):
     return parsed
 
 
+def compute_advanced_box_metrics(folder, game_dates):
+    """Compute leak-free local impact & usage metrics (BPM, VORP, shrunk On-Off, USG%) from regular-season box scores."""
+    team_game_stats = {}
+    team_totals = defaultdict(lambda: {"pts": 0.0, "opp_pts": 0.0, "poss": 0.0, "games": 0})
+    tbox_path = folder / "team_box_scores.csv"
+    if not tbox_path.is_file():
+        return {}
+    for row in read_csv(tbox_path):
+        gid = row.get("game_id")
+        if gid not in game_dates:
+            continue
+        tid = str(row.get("team_id") or "")
+        if not tid:
+            continue
+        fga = _safe_float(row.get("field_goals_attempted")) or 0.0
+        fta = _safe_float(row.get("free_throws_attempted")) or 0.0
+        tov = _safe_float(row.get("turnovers")) or 0.0
+        orb = _safe_float(row.get("offensive_rebounds")) or 0.0
+        pts = _safe_float(row.get("team_score")) or 0.0
+        opts = _safe_float(row.get("opponent_team_score")) or 0.0
+        poss = max(1.0, fga + 0.44 * fta - orb + tov)
+        team_game_stats[(gid, tid)] = {
+            "fga": fga, "fta": fta, "tov": tov, "margin": pts - opts, "poss": poss,
+        }
+        ts = team_totals[tid]
+        ts["pts"] += pts
+        ts["opp_pts"] += opts
+        ts["poss"] += poss
+        ts["games"] += 1
+
+    raw_entries = []
+    team_game_min = defaultdict(float)
+    with (folder / "player_box_scores.csv").open(encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            gid = row.get("game_id")
+            if gid not in game_dates:
+                continue
+            aid = str(row.get("athlete_id") or "").strip()
+            tid = str(row.get("team_id") or "").strip()
+            mins = parse_minutes(row.get("minutes"))
+            if not aid or not tid or mins is None or mins <= 0:
+                continue
+            team_game_min[(gid, tid)] += mins
+            raw_entries.append((gid, aid, tid, mins, row))
+
+    p_rows = defaultdict(lambda: {
+        "min": 0.0, "pts": 0.0, "fga": 0.0, "tpm": 0.0, "fta": 0.0,
+        "orb": 0.0, "drb": 0.0, "ast": 0.0, "stl": 0.0, "blk": 0.0, "tov": 0.0, "pf": 0.0,
+        "on_pm": 0.0, "on_pm_min": 0.0, "off_pm": 0.0, "off_pm_min": 0.0,
+        "tm_fga": 0.0, "tm_fta": 0.0, "tm_tov": 0.0, "tm_min": 0.0, "tm_poss": 0.0,
+        "team_counts": Counter(), "pos_counts": Counter(),
+    })
+    for gid, aid, tid, mins, row in raw_entries:
+        rec = p_rows[aid]
+        rec["min"] += mins
+        rec["pts"] += _safe_float(row.get("points")) or 0.0
+        rec["fga"] += _safe_float(row.get("field_goals_attempted")) or 0.0
+        rec["tpm"] += _safe_float(row.get("three_point_field_goals_made")) or 0.0
+        rec["fta"] += _safe_float(row.get("free_throws_attempted")) or 0.0
+        rec["orb"] += _safe_float(row.get("offensive_rebounds")) or 0.0
+        rec["drb"] += _safe_float(row.get("defensive_rebounds")) or 0.0
+        rec["ast"] += _safe_float(row.get("assists")) or 0.0
+        rec["stl"] += _safe_float(row.get("steals")) or 0.0
+        rec["blk"] += _safe_float(row.get("blocks")) or 0.0
+        rec["tov"] += _safe_float(row.get("turnovers")) or 0.0
+        rec["pf"] += _safe_float(row.get("fouls")) or 0.0
+        rec["team_counts"][tid] += 1
+        pos = (row.get("athlete_position_abbreviation") or "").strip().upper()
+        if pos:
+            rec["pos_counts"][pos] += 1
+        tgs = team_game_stats.get((gid, tid))
+        tgm = max(team_game_min.get((gid, tid), 240.0), 5.0 * mins)
+        if tgs is not None:
+            rec["tm_fga"] += tgs["fga"]
+            rec["tm_fta"] += tgs["fta"]
+            rec["tm_tov"] += tgs["tov"]
+            rec["tm_min"] += tgm
+            rec["tm_poss"] += tgs["poss"] * (mins / (tgm / 5.0))
+            pm_raw = (row.get("plus_minus") or "").strip().replace("+", "")
+            pm = _safe_float(pm_raw)
+            if pm is not None:
+                game_len = tgm / 5.0
+                rec["on_pm"] += pm
+                rec["on_pm_min"] += mins
+                rec["off_pm"] += (tgs["margin"] - pm)
+                rec["off_pm_min"] += max(0.0, game_len - mins)
+
+    pos_w = {"PG": 1.0, "G": 1.5, "SG": 2.0, "SF": 3.0, "F": 3.5, "PF": 4.0, "C": 5.0}
+    raw_bpm_by_id = {}
+    team_bpm_num, team_bpm_den = defaultdict(float), defaultdict(float)
+    for aid, r in p_rows.items():
+        poss = max(r["tm_poss"], 1.0)
+        if r["pos_counts"]:
+            pos_est = sum(pos_w.get(k, 3.0) * c for k, c in r["pos_counts"].items()) / sum(r["pos_counts"].values())
+        else:
+            pos_est = 3.0
+        pf = (pos_est - 1.0) / 4.0
+        s = 100.0 / poss
+        raw_bpm = (
+            0.860 * (r["pts"] * s)
+            + (-0.850 * (1.0 - pf) - 0.720 * pf) * (r["fga"] * s)
+            + (-0.336 * (1.0 - pf) - 0.372 * pf) * (r["fta"] * s)
+            + 0.389 * (r["tpm"] * s)
+            + (0.413 * (1.0 - pf) + 0.181 * pf) * (r["orb"] * s)
+            + (0.191 * (1.0 - pf) + 0.181 * pf) * (r["drb"] * s)
+            + (1.368 * (1.0 - pf) + 1.008 * pf) * (r["stl"] * s)
+            + 0.703 * (r["blk"] * s)
+            + (0.580 * (1.0 - pf) + 1.034 * pf) * (r["ast"] * s)
+            - 0.964 * (r["tov"] * s)
+            - 0.375 * (r["pf"] * s)
+            - 4.5
+        )
+        raw_bpm_by_id[aid] = raw_bpm
+        main_tid = r["team_counts"].most_common(1)[0][0]
+        team_bpm_num[main_tid] += raw_bpm * r["min"]
+        team_bpm_den[main_tid] += r["min"]
+
+    team_adj = {}
+    for tid, ts in team_totals.items():
+        net100 = 100.0 * (ts["pts"] - ts["opp_pts"]) / max(ts["poss"], 1.0)
+        team_adj[tid] = net100 - (team_bpm_num[tid] / max(team_bpm_den[tid], 1.0))
+
+    out = {}
+    for aid, r in p_rows.items():
+        mins = max(r["min"], 1.0)
+        main_tid = r["team_counts"].most_common(1)[0][0]
+        on_m, off_m = r["on_pm_min"], r["off_pm_min"]
+        if on_m > 0 and off_m > 0:
+            eff_m = (on_m * off_m) / (on_m + off_m)
+            on_off = (eff_m / (eff_m + 500.0)) * (((r["on_pm"] / on_m) - (r["off_pm"] / off_m)) * 36.0)
+        else:
+            on_off = 0.0
+        shrink = mins / (mins + 250.0)
+        bpm = shrink * (raw_bpm_by_id[aid] + team_adj.get(main_tid, 0.0)) + (1.0 - shrink) * (-2.0)
+        tm_g = max(team_totals[main_tid]["games"], 1)
+        vorp = (bpm + 2.0) * (mins / (tm_g * 240.0)) * (82.0 / tm_g)
+        tm_used = max(r["tm_fga"] + 0.44 * r["tm_fta"] + r["tm_tov"], 1.0)
+        usg = min(48.0, max(5.0, 100.0 * ((r["fga"] + 0.44 * r["fta"] + r["tov"]) * (r["tm_min"] / 5.0)) / (mins * tm_used)))
+        out[aid] = {
+            "bpm": round(bpm, 3),
+            "vorp": round(vorp, 3),
+            "on_off": round(on_off, 3),
+            "usg_pct": round(usg, 3),
+        }
+    return out
+
+
 def load_season_custom(folder, scoring, prior_births=None):
     """Load one completed regular season under ANY custom scoring dictionary in a single pass."""
     if folder is None or not (folder / "games.csv").is_file() or not (folder / "player_box_scores.csv").is_file():
@@ -819,6 +973,12 @@ def load_season_custom(folder, scoring, prior_births=None):
         adj_by_id[aid] = adj
         raw_by_id[aid] = raw
 
+    adv_metrics = compute_advanced_box_metrics(folder, game_dates)
+    for aid, p in players.items():
+        am = adv_metrics.get(aid)
+        if am is not None:
+            p.update(am)
+
     adj_lb = sorted(adj_by_id.values(), reverse=True)
     adj_rank_by_score = {}
     for place, sc in enumerate(adj_lb, start=1):
@@ -911,6 +1071,10 @@ def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, pri
         "prior_post_break_fppg_chg": pr["post_fppg_chg"],
         "prior_post_break_mpg_chg": pr["post_mpg_chg"],
         "prior_tp_pct": pr["tp_pct"],
+        "prior_bpm": pr.get("bpm"),
+        "prior_vorp": pr.get("vorp"),
+        "prior_on_off": pr.get("on_off"),
+        "prior_usg_pct": pr.get("usg_pct"),
         "age_at_prior_break": age,
         "age_under_24": age_under_24,
         "age_over_30": age_over_30,
@@ -934,16 +1098,51 @@ def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, pri
     return row
 
 
+def load_vegas_preseason_odds(data):
+    """Load verified preseason NBA Vegas Win Totals (`data/vegas_preseason_odds.csv`) if present."""
+    path = Path(data) / "vegas_preseason_odds.csv"
+    if not path.is_file():
+        return {}
+    aliases = {
+        "GS": "GSW", "NO": "NOP", "NY": "NYK", "SA": "SAS",
+        "UTAH": "UTA", "WSH": "WAS", "BKN": "BRK", "CHA": "CHO", "PHX": "PHO",
+    }
+    odds = {}
+    for row in read_csv(path):
+        s = (row.get("season") or "").strip()
+        ab = (row.get("espn_abbr") or "").strip().upper()
+        wpct = _safe_float(row.get("win_ou_pct"))
+        if not s or not ab or wpct is None:
+            continue
+        odds[(s, ab)] = wpct
+        if ab in aliases:
+            odds[(s, aliases[ab])] = wpct
+    return odds
+
+
 def make_rookie_feature_row(
     *, aid, player_name, prof, prior_year, prior_name, target_season, prior_s,
-    team_id=None, adp_team_abbr=None, pos_override=None, next_s=None,
+    team_id=None, adp_team_abbr=None, pos_override=None, next_s=None, vegas_odds=None,
 ):
-    """Build an incoming-rookie feature row from NBA draft pick, bio, and Year-0 team context (0% ADP)."""
+    """Build an incoming-rookie feature row from NBA draft pick, bio, Year-0 team context, and preseason Vegas win%."""
     prof = prof or {}
     tid = team_id or prof.get("team_id")
     if tid is None and adp_team_abbr:
         tid = prior_s["abbr_to_tid"].get(adp_team_abbr.strip().upper())
     tctx = prior_s["team_ctx"].get(str(tid)) if tid is not None else None
+
+    # Resolve team abbreviation for preseason Vegas win total (falls back cleanly to team_prior_win_pct if absent)
+    team_abbr = adp_team_abbr.strip().upper() if adp_team_abbr else None
+    if tid is not None:
+        for src in (next_s, prior_s):
+            if src is not None:
+                found = next((ab.strip().upper() for ab, t_val in src["abbr_to_tid"].items() if str(t_val) == str(tid)), None)
+                if found:
+                    team_abbr = found
+                    break
+    prior_win_pct = round(tctx["win_pct"], 4) if (tctx and tctx["win_pct"] is not None) else None
+    vegas_wpct = (vegas_odds or {}).get((target_season, team_abbr)) if team_abbr else None
+    eff_vegas_wpct = round(float(vegas_wpct), 4) if vegas_wpct is not None else prior_win_pct
 
     overall_pick = prof.get("overall_pick")
     eff_pick = float(overall_pick) if overall_pick is not None else 65.0
@@ -979,7 +1178,8 @@ def make_rookie_feature_row(
         "rookie_age": round(rookie_age, 2) if rookie_age is not None else None,
         "height_inches": prof.get("height"),
         "team_top8_avg_age": round(tctx["top8_avg_age"], 2) if (tctx and tctx["top8_avg_age"] is not None) else None,
-        "team_prior_win_pct": round(tctx["win_pct"], 4) if (tctx and tctx["win_pct"] is not None) else None,
+        "team_prior_win_pct": prior_win_pct,
+        "team_vegas_win_pct": eff_vegas_wpct,
         "team_vet30_min_share": round(tctx["vet30_min_share"], 4) if (tctx and tctx["vet30_min_share"] is not None) else None,
         "team_prior_top150_count": tctx["top150_count"] if tctx else None,
         "adp": None, "log_adp": None, "mkt_expected_adj_fppg": None,
@@ -1088,7 +1288,7 @@ def _make_spline_ridge(feat_list, spline_targets):
 # Stage 1 Model: 100% ADP-Free Pure Stats (50/50 Huber + Decomposed + Rookies)
 # ==============================================================================
 
-def fit_predict_pure_stats(tr_vets, tr_rookies, evaluated_all, prior_waiver):
+def fit_predict_pure_stats(tr_vets, tr_rookies, evaluated_all, prior_waiver, use_advanced_stats=False):
     """Fit 100% ADP-FREE models and return absolute AdjFPPG projections + MPG/FPPM/Avail sub-projections."""
     ev_vet_idx = [i for i, r in enumerate(evaluated_all) if r["player_type"] == "returning_vet"]
     ev_rk_idx = [i for i, r in enumerate(evaluated_all) if r["player_type"] == "rookie"]
@@ -1105,9 +1305,13 @@ def fit_predict_pure_stats(tr_vets, tr_rookies, evaluated_all, prior_waiver):
     vet_coefs, rk_coefs = {}, {}
     spline_set = {"prior_mpg", "prior_fppm", "prior_fppg", "prior_games", "age_at_prior_break"}
 
+    vet_feats_cfg = VET_STATS_FEATURES + (VET_STATS_ADV_FEATURES if use_advanced_stats else ())
+    mpg_feats_cfg = VET_STATS_MPG_FEATURES + (VET_STATS_MPG_ADV_FEATURES if use_advanced_stats else ())
+    fppm_feats_cfg = VET_STATS_FPPM_FEATURES + (VET_STATS_FPPM_ADV_FEATURES if use_advanced_stats else ())
+
     if tr_vets and ev_vets:
         y_vet = np.array([float(r["next_adj_fppg"]) for r in tr_vets], dtype=float)
-        h_feats = active_features(tr_vets, VET_STATS_FEATURES)
+        h_feats = active_features(tr_vets, vet_feats_cfg)
         X_tr_h = to_matrix(tr_vets, h_feats)
         X_ev_h = to_matrix(ev_vets, h_feats)
         h_pipe = make_pipeline(
@@ -1120,8 +1324,8 @@ def fit_predict_pure_stats(tr_vets, tr_rookies, evaluated_all, prior_waiver):
         vet_coefs = dict(zip(h_feats, map(float, h_pipe.named_steps["huberregressor"].coef_)))
 
         rate_rows = [r for r in tr_vets if r.get("next_mpg") is not None and r.get("next_fppm") is not None]
-        mpg_f = active_features(rate_rows, VET_STATS_MPG_FEATURES)
-        fppm_f = active_features(rate_rows, VET_STATS_FPPM_FEATURES)
+        mpg_f = active_features(rate_rows, mpg_feats_cfg)
+        fppm_f = active_features(rate_rows, fppm_feats_cfg)
         av_f = active_features(tr_vets, VET_STATS_AVAIL_FEATURES)
 
         X_m, y_m = to_matrix(rate_rows, mpg_f), np.array([float(r["next_mpg"]) for r in rate_rows], dtype=float)
@@ -1266,7 +1470,7 @@ def _effective_residual_lam(adp, lam_early, lam_late):
     return float(lam_early) + t * (float(lam_late) - float(lam_early))
 
 
-def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver, lam=0.50, lam_late=None):
+def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver, lam=0.50, lam_late=None, use_advanced_stats=False):
     """Fit Stage-2 `unified_equal` (Huber + Decomposed + shallow L1 GBDT vets + Rookie Huber) on custom-scored ADP pools."""
     tr_vets = [
         r for r in training_adp_rows
@@ -1313,8 +1517,8 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
         vet_coefs = dict(zip(h_feats, map(float, h_pipe.named_steps["huberregressor"].coef_)))
 
         rate_rows = [r for r in tr_vets if r.get("next_mpg") is not None and r.get("next_fppm") is not None]
-        mpg_f = active_features(rate_rows, VET_RES_MPG_FEATURES)
-        fppm_f = active_features(rate_rows, VET_RES_FPPM_FEATURES)
+        mpg_f = active_features(rate_rows, VET_RES_MPG_FEATURES + (VET_RES_MPG_ADV_FEATURES if use_advanced_stats else ()))
+        fppm_f = active_features(rate_rows, VET_RES_FPPM_FEATURES + (VET_RES_FPPM_ADV_FEATURES if use_advanced_stats else ()))
         av_f = active_features(tr_vets, VET_RES_AVAIL_FEATURES)
 
         X_m, y_m = to_matrix(rate_rows, mpg_f), np.array([float(r["next_mpg"]) for r in rate_rows], dtype=float)
@@ -1478,7 +1682,7 @@ def load_all_completed_seasons(data, scoring):
     return seasons_dirs, season_data, births_cache, profiles_cache
 
 
-def build_eval_adp_pool(data, year, seasons_dirs, season_data, births_cache, profiles_cache, played_before_prior, history_available, max_pool_adp=225.0):
+def build_eval_adp_pool(data, year, seasons_dirs, season_data, births_cache, profiles_cache, played_before_prior, history_available, max_pool_adp=225.0, vegas_odds=None):
     """Build full-pool ADP candidate rows for year -> year+1 with both pure-stats and ADP-residual features."""
     prior_s = season_data[year]
     next_s = season_data.get(year + 1)
@@ -1567,6 +1771,7 @@ def build_eval_adp_pool(data, year, seasons_dirs, season_data, births_cache, pro
                 adp_team_abbr=entry["adp_team_abbr"],
                 pos_override=entry["adp_positions"],
                 next_s=next_s,
+                vegas_odds=vegas_odds,
             )
         else:
             p2_rec = prev2_s["players"].get(aid) if (prev2_s is not None and aid is not None) else None
@@ -1599,6 +1804,7 @@ def build_all_training_datasets(data, seasons_dirs, season_data, births_cache, p
     pure_vet_by_s = defaultdict(list)
     pure_rk_by_s = defaultdict(list)
     adp_pool_by_s = {}
+    vegas_odds = load_vegas_preseason_odds(data)
 
     for year in sorted(season_data):
         if history_available and year >= FIRST_ARCHIVE_YEAR:
@@ -1641,7 +1847,7 @@ def build_all_training_datasets(data, seasons_dirs, season_data, births_cache, p
                 make_rookie_feature_row(
                     aid=aid, player_name=prof["display_name"], prof=prof,
                     prior_year=year, prior_name=prior_name, target_season=target_name,
-                    prior_s=prior_s, team_id=tid, next_s=next_s,
+                    prior_s=prior_s, team_id=tid, next_s=next_s, vegas_odds=vegas_odds,
                 )
             )
 
@@ -1650,6 +1856,7 @@ def build_all_training_datasets(data, seasons_dirs, season_data, births_cache, p
             adp_pool_by_s[target_name] = build_eval_adp_pool(
                 data, year, seasons_dirs, season_data, births_cache, profiles_cache,
                 set(played_before), history_available, max_pool_adp=max_pool_adp,
+                vegas_odds=vegas_odds,
             )
 
     return pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, played_before, history_available
@@ -2035,7 +2242,7 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, wait_lam=DEFAULT_WAI
     return sim_summary, sim_seasons
 
 
-def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None):
+def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None, use_advanced_stats=False):
     seasons_dirs, season_data, births_cache, profiles_cache = load_all_completed_seasons(data, scoring)
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, _, _ = build_all_training_datasets(
         data, seasons_dirs, season_data, births_cache, profiles_cache, max_pool_adp=max_pool_adp,
@@ -2068,13 +2275,13 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LA
         prior_waiver = season_data[prior_year]["waiver_fppg"]
 
         # Stage 1: Pure Stats + Optional News/Blend
-        res_pure = fit_predict_pure_stats(tr_pure_vets, tr_pure_rks, cands, prior_waiver)
+        res_pure = fit_predict_pure_stats(tr_pure_vets, tr_pure_rks, cands, prior_waiver, use_advanced_stats=use_advanced_stats)
         pure_preds = res_pure["pure_stats"]
         news_cut_preds, _ = apply_optional_adp_layer(cands, pure_preds, adp_weight=0.0, apply_collapse_guard=True)
         blend50_preds, _ = apply_optional_adp_layer(cands, pure_preds, adp_weight=0.50, apply_collapse_guard=True)
 
         # Stage 2: ADP-Aware Residual Champion (`unified_equal`, lam) + Reach-vs-Wait (`wait_lam`)
-        res_resid = fit_predict_residual_unified(tr_adp_rows, cands, prior_waiver, lam=lam)
+        res_resid = fit_predict_residual_unified(tr_adp_rows, cands, prior_waiver, lam=lam, use_advanced_stats=use_advanced_stats)
         resid_preds = res_resid["residual_proj"]
         clip_val = max(4.0, COLLAPSE_WAIVER_RATIO * prior_waiver)
         raw_res = res_resid["raw_residuals"]
@@ -2246,6 +2453,7 @@ def generate_live_board(
     exclude_players="",
     rookies_csv=None,
     board_limit=225,
+    use_advanced_stats=False,
 ):
     """Generate a ready-to-use ranked draft board in either Stage-1 (`pure_stats`) or Stage-2 (`residual`) mode."""
     if not re.fullmatch(r"\d{4}-\d{2}", target_season):
@@ -2309,6 +2517,7 @@ def generate_live_board(
     except Exception:
         target_profs = {}
     prior_profs = profiles_cache.get(prior_year, {})
+    vegas_odds = load_vegas_preseason_odds(data)
 
     # Build candidates
     cands = []
@@ -2392,6 +2601,7 @@ def generate_live_board(
                         aid=aid or f"unmatched_{key}", player_name=entry["player"], prof=prof,
                         prior_year=prior_year, prior_name=prior_name, target_season=target_season,
                         prior_s=prior_s, adp_team_abbr=entry["adp_team_abbr"], pos_override=entry["adp_positions"],
+                        vegas_odds=vegas_odds,
                     )
             else:
                 p2_rec = prev2_s["players"].get(aid) if (prev2_s is not None and aid is not None) else None
@@ -2463,6 +2673,7 @@ def generate_live_board(
                     prior_s=prior_s,
                     adp_team_abbr=adp_by_key[k]["adp_team_abbr"] if k in adp_by_key else None,
                     pos_override=adp_by_key[k]["adp_positions"] if k in adp_by_key else None,
+                    vegas_odds=vegas_odds,
                 ))
                 seen_ids.add(aid)
                 seen_keys.add(k)
@@ -2475,12 +2686,12 @@ def generate_live_board(
     # Always compute Layer-1 pure_stats for transparency (even in residual mode)
     tr_pure_vets = [r for s in prior_seasons_pure for r in pure_vet_by_s[s]]
     tr_pure_rks = [r for s in prior_seasons_pure for r in pure_rk_by_s[s]]
-    pure_res = fit_predict_pure_stats(tr_pure_vets, tr_pure_rks, cands, prior_s["waiver_fppg"])
+    pure_res = fit_predict_pure_stats(tr_pure_vets, tr_pure_rks, cands, prior_s["waiver_fppg"], use_advanced_stats=use_advanced_stats)
     pure_preds = pure_res["pure_stats"]
 
     if eff_mode == "residual":
         tr_adp_rows = [r for s in prior_seasons_adp for r in adp_pool_by_s[s]]
-        res_out = fit_predict_residual_unified(tr_adp_rows, cands, prior_s["waiver_fppg"], lam=lam)
+        res_out = fit_predict_residual_unified(tr_adp_rows, cands, prior_s["waiver_fppg"], lam=lam, use_advanced_stats=use_advanced_stats)
         model_preds = res_out["residual_proj"]
         proj_mpg, proj_fppm, proj_avail = res_out["proj_mpg"], res_out["proj_fppm"], res_out["proj_avail"]
         alerts = ["CHECK_INJURY" if r.get("market_collapse_excess", 0.0) > 0 else "" for r in cands]
@@ -2636,6 +2847,7 @@ def main():
     parser.add_argument("--trials-per-slot", type=int, default=12, help="Monte Carlo drafts per slot in --backtest (default: 12)")
     parser.add_argument("--adp-var", type=float, default=2.0, help="villain R2-13 Uniform ADP noise bound (default: 2.0)")
     parser.add_argument("--skip-sim", action="store_true", help="skip the 12-team ESPN simulator in --backtest")
+    parser.add_argument("--advanced-stats", action="store_true", help="opt-in: enable local BPM/VORP/On-Off/USG% extension")
     parser.add_argument("--seed", type=int, default=None, help="random seed for simulator")
     args = parser.parse_args()
 
@@ -2645,6 +2857,7 @@ def main():
         parser.error("--adp-weight must be in [0, 1] and --lam >= 0")
     try:
         scoring_name, scoring = resolve_scoring(args.scoring)
+        use_adv = bool(args.advanced_stats)
         if args.generate_board:
             generate_live_board(
                 data=args.data,
@@ -2661,6 +2874,7 @@ def main():
                 as_of_date_str=args.as_of_date,
                 exclude_players=args.exclude_players,
                 rookies_csv=args.rookies_csv,
+                use_advanced_stats=use_adv,
             )
         else:
             run_backtest(
@@ -2675,6 +2889,7 @@ def main():
                 trials_per_slot=args.trials_per_slot,
                 adp_var=args.adp_var,
                 seed=args.seed,
+                use_advanced_stats=use_adv,
             )
     except (OSError, ValueError, KeyError, csv.Error) as error:
         parser.exit(1, f"Draft engine failed: {error}\n")

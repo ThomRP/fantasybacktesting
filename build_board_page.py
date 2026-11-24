@@ -207,7 +207,7 @@ def load_season_timeline(folder: Path, scoring: dict, is_live: bool = False):
 
 def build_stage1_pool_for_season(
     target_year, prior_s, prev2_s, births_prior, target_profs, played_before_prior,
-    adp_entries, tr_pv, tr_pr,
+    adp_entries, tr_pv, tr_pr, vegas_odds=None,
 ):
     prior_year = target_year - 1
     prior_name = de.season_label(prior_year)
@@ -255,7 +255,7 @@ def build_stage1_pool_for_season(
             s1_cands.append(de.make_rookie_feature_row(
                 aid=aid, player_name=prof["display_name"], prof=prof,
                 prior_year=prior_year, prior_name=prior_name, target_season=target_season,
-                prior_s=prior_s,
+                prior_s=prior_s, vegas_odds=vegas_odds,
             ))
             seen_ids.add(aid)
             seen_keys.add(k)
@@ -299,7 +299,7 @@ def build_stage1_pool_for_season(
     return s1_ordered
 
 
-def build_live_2026_27_s2_cands(data, prior_s, prev2_s, births_prior, target_profs, prior_profs, played_before, adp_entries, early_data):
+def build_live_2026_27_s2_cands(data, prior_s, prev2_s, births_prior, target_profs, prior_profs, played_before, adp_entries, early_data, vegas_odds=None):
     target_season = "2026-27"
     target_year = 2026
     prior_year = 2025
@@ -373,6 +373,7 @@ def build_live_2026_27_s2_cands(data, prior_s, prev2_s, births_prior, target_pro
                 aid=aid or f"unmatched_{key}", player_name=entry["player"], prof=prof,
                 prior_year=prior_year, prior_name=prior_name, target_season=target_season,
                 prior_s=prior_s, adp_team_abbr=entry["adp_team_abbr"], pos_override=entry["adp_positions"],
+                vegas_odds=vegas_odds,
             )
         else:
             p2_rec = prev2_s["players"].get(aid) if (prev2_s is not None and aid is not None) else None
@@ -400,6 +401,7 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default"):
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, played_before_all, _ = de.build_all_training_datasets(
         data, seasons_dirs, season_data, births_cache, profiles_cache,
     )
+    vegas_odds = de.load_vegas_preseason_odds(data)
 
     # Load historical 12-team sim summary by season (if available) to display in season header
     sim_by_season = {}
@@ -452,6 +454,7 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default"):
             s2_cands = build_live_2026_27_s2_cands(
                 data, prior_s, prev2_s, births_cache.get(prior_year, {}),
                 target_profs, profiles_cache.get(prior_year, {}), played_before_all, adp_entries, early_data,
+                vegas_odds=vegas_odds,
             )
             pb_prior = played_before_all
         else:
@@ -480,7 +483,7 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default"):
         # Fit Stage 1 Pure Stats (0% ADP, whole NBA)
         s1_ordered = build_stage1_pool_for_season(
             target_year, prior_s, prev2_s, births_cache.get(prior_year, {}),
-            target_profs, pb_prior, adp_entries, tr_pv, tr_pr,
+            target_profs, pb_prior, adp_entries, tr_pv, tr_pr, vegas_odds=vegas_odds,
         )
 
         # Build exact game-by-game timeline for this season
@@ -601,79 +604,104 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fantasy Basketball Draft Engine — Multi-Season Top 150 &amp; Real-Time Edge Replay</title>
+<title>Fantasy Basketball Draft Board &amp; Edge Replay</title>
 <style>
   :root {
-    --bg: #101215;
-    --paper: #171a1f;
-    --paper-hi: #1d2128;
-    --ink: #e7e5dd;
-    --muted: #8b919c;
-    --rule: #292e37;
-    --rule-strong: #464d5b;
-    --row-alt: #13161b;
-    --row-hover: #212630;
-    --pos: #4ade80;
-    --pos-bg: rgba(74, 222, 128, 0.12);
-    --pos-bd: rgba(74, 222, 128, 0.30);
-    --neg: #f87171;
-    --neg-bg: rgba(248, 113, 113, 0.12);
-    --neg-bd: rgba(248, 113, 113, 0.30);
-    --warn: #fbbf24;
-    --warn-bg: rgba(251, 191, 36, 0.13);
-    --warn-bd: rgba(251, 191, 36, 0.35);
-    --accent: #60a5fa;
-    --accent-bg: rgba(96, 165, 250, 0.13);
-    --accent-bd: rgba(96, 165, 250, 0.32);
-    --live: #34d399;
+    --bg: #f4f7fb;
+    --card: #ffffff;
+    --card-soft: #f8fafc;
+    --ink: #0f172a;
+    --ink-2: #334155;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --border-strong: #cbd5e1;
+    --row-alt: #f8fafc;
+    --row-hover: #eff6ff;
+    --pos: #059669;
+    --pos-bg: #ecfdf5;
+    --pos-bd: #a7f3d0;
+    --neg: #e11d48;
+    --neg-bg: #fff1f2;
+    --neg-bd: #fecdd3;
+    --amber: #d97706;
+    --amber-bg: #fffbeb;
+    --amber-bd: #fde68a;
+    --accent: #2563eb;
+    --accent-bg: #eff6ff;
+    --accent-bd: #bfdbfe;
+    --orange: #ea580c;
+    --shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    padding: 24px 18px 60px;
-    background: var(--bg);
+    padding: 24px 18px 56px;
+    background: linear-gradient(180deg, #eef4ff 0%, var(--bg) 220px);
     color: var(--ink);
-    font-family: Georgia, "Times New Roman", serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     line-height: 1.45;
   }
-  .wrap { max-width: 1280px; margin: 0 auto; }
-  header {
-    border-bottom: 2px solid var(--rule-strong);
-    padding-bottom: 14px;
-    margin-bottom: 14px;
-  }
-  .kicker {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: var(--muted);
-    margin-bottom: 4px;
-  }
-  h1 {
-    margin: 0 0 6px;
-    font-size: 26px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    color: #f3f1ea;
-  }
-  .subtitle {
-    margin: 0;
-    font-size: 13.5px;
-    color: var(--muted);
-  }
-  .subtitle strong { color: var(--ink); }
+  .wrap { max-width: 1220px; margin: 0 auto; }
 
-  /* Season Switcher Bar */
-  .season-bar {
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    padding: 10px 12px;
-    margin-bottom: 12px;
+  /* Compact Header */
+  header {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 14px;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  h1 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    color: var(--ink);
+  }
+  .split-badge {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--muted);
+  }
+  .split-badge.live { background: var(--pos-bg); border-color: var(--pos-bd); color: var(--pos); }
+  .split-badge.holdout { background: var(--amber-bg); border-color: var(--amber-bd); color: var(--amber); }
+  .split-badge.cv { background: var(--accent-bg); border-color: var(--accent-bd); color: var(--accent); }
+  .header-meta {
+    font-size: 13px;
+    color: var(--muted);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 5px 13px;
+    box-shadow: var(--shadow);
+  }
+  .header-meta strong { color: var(--ink); }
+
+  /* Season Bar */
+  .season-bar {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
   }
   .season-group {
     display: flex;
@@ -682,45 +710,48 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     gap: 5px;
   }
   .season-group-lbl {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 10.5px;
+    font-size: 11px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.05em;
     color: var(--muted);
     margin-right: 3px;
   }
   .season-btn {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
-    background: var(--bg);
-    border: 1px solid var(--rule);
-    color: var(--muted);
-    padding: 5px 9px;
+    font-weight: 600;
+    background: var(--card-soft);
+    border: 1px solid var(--border);
+    color: var(--ink-2);
+    padding: 5px 10px;
+    border-radius: 8px;
     cursor: pointer;
+    transition: all 0.12s ease;
   }
-  .season-btn:hover { background: var(--row-hover); color: var(--ink); }
-  .season-btn.holdout { border-color: rgba(251, 191, 36, 0.35); color: #e5c678; }
-  .season-btn.live { border-color: rgba(74, 222, 128, 0.4); color: var(--pos); }
+  .season-btn:hover { background: var(--accent-bg); border-color: var(--accent-bd); color: var(--accent); }
+  .season-btn.holdout { border-color: var(--amber-bd); color: var(--amber); background: var(--amber-bg); }
+  .season-btn.live { border-color: var(--pos-bd); color: var(--pos); background: var(--pos-bg); }
   .season-btn.active {
     background: var(--ink);
     border-color: var(--ink);
-    color: #101215;
-    font-weight: 700;
+    color: #ffffff;
   }
   .season-sim-note {
     margin-left: auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11.5px;
+    font-size: 12.5px;
     color: var(--muted);
+    font-weight: 500;
   }
-  .season-sim-note strong { color: var(--pos); }
+  .season-sim-note strong { color: var(--pos); font-weight: 700; }
 
-  /* Real-Time Replay Panel */
+  /* Replay Card */
   .replay-panel {
-    background: var(--paper-hi);
-    border: 1px solid var(--rule-strong);
-    padding: 12px 14px;
-    margin-bottom: 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow);
   }
   .replay-top {
     display: flex;
@@ -734,63 +765,63 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
   }
   .play-btn {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 700;
-    background: var(--pos-bg);
+    background: var(--pos);
     border: 1px solid var(--pos);
-    color: var(--pos);
-    padding: 6px 13px;
+    color: #ffffff;
+    padding: 6px 14px;
+    border-radius: 8px;
     cursor: pointer;
-    min-width: 138px;
+    min-width: 108px;
+    transition: opacity 0.12s ease;
   }
-  .play-btn:hover { background: rgba(74, 222, 128, 0.22); }
-  .play-btn.playing {
-    background: var(--warn-bg);
-    border-color: var(--warn);
-    color: var(--warn);
-  }
+  .play-btn:hover { opacity: 0.92; }
+  .play-btn.playing { background: var(--orange); border-color: var(--orange); }
   .mini-btn {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    color: var(--ink);
-    padding: 6px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--card-soft);
+    border: 1px solid var(--border);
+    color: var(--ink-2);
+    padding: 5px 10px;
+    border-radius: 8px;
     cursor: pointer;
+    transition: all 0.12s ease;
   }
-  .mini-btn:hover { background: var(--row-hover); }
+  .mini-btn:hover { background: var(--row-hover); border-color: var(--accent-bd); color: var(--accent); }
   .mini-btn.active {
     background: var(--accent-bg);
-    border-color: var(--accent);
+    border-color: var(--accent-bd);
     color: var(--accent);
-    font-weight: 700;
   }
   .replay-clock {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12.5px;
+    font-size: 13px;
+    font-weight: 600;
     color: var(--ink);
+    font-variant-numeric: tabular-nums;
   }
-  .replay-clock span { color: var(--muted); }
+  .replay-clock span { color: var(--muted); font-weight: 500; }
   .slider-row {
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
   }
   .slider-end {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
+    font-size: 11.5px;
+    font-weight: 600;
     color: var(--muted);
-    min-width: 44px;
+    min-width: 34px;
+    font-variant-numeric: tabular-nums;
   }
   .slider-end.right { text-align: right; }
   input[type="range"]#game-slider {
     flex: 1;
-    accent-color: var(--pos);
+    accent-color: var(--accent);
     cursor: pointer;
     height: 6px;
   }
@@ -800,286 +831,271 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     justify-content: space-between;
     align-items: center;
     gap: 8px;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
   }
   .chart-title {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    font-size: 12px;
+    font-weight: 600;
     color: var(--muted);
   }
   .chart-modes { display: flex; gap: 5px; flex-wrap: wrap; }
   #edge-chart {
     width: 100%;
-    height: 118px;
+    height: 116px;
     display: block;
-    background: #12151a;
-    border: 1px solid var(--rule);
+    background: #fafcff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
     cursor: crosshair;
   }
 
-  .section-kicker {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--muted);
-    margin: 14px 0 7px;
-  }
+  /* 4 Crisp KPI Cards */
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 10px;
-    margin: 0 0 12px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
   }
   .stat-box {
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    padding: 12px 14px;
-  }
-  .stat-box.featured {
-    border-top: 2px solid var(--rule-strong);
-    background: var(--paper-hi);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
   }
   .stat-label {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 10.5px;
+    font-size: 11.5px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     color: var(--muted);
-    margin-bottom: 5px;
+    margin-bottom: 6px;
   }
   .stat-val {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 22px;
-    font-weight: 700;
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
     line-height: 1.15;
     color: var(--ink);
+    font-variant-numeric: tabular-nums;
   }
   .stat-sub {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--muted);
     margin-top: 5px;
-    line-height: 1.38;
   }
-  .stat-sub strong { color: var(--ink); font-weight: 600; }
+  .stat-sub strong { color: var(--ink-2); font-weight: 600; }
+
+  /* Compact Round Strip */
   .bands {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11.5px;
+    font-size: 12.5px;
     color: var(--muted);
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    padding: 8px 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 9px 14px;
     margin-bottom: 14px;
+    box-shadow: var(--shadow);
     display: flex;
     flex-wrap: wrap;
-    gap: 16px;
+    gap: 14px;
     align-items: center;
+    font-variant-numeric: tabular-nums;
   }
+  .bands .sep { color: var(--border-strong); }
   .bands strong { color: var(--ink); font-weight: 700; }
-  details.explainer {
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    padding: 10px 14px;
-    margin-bottom: 16px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    font-size: 12.5px;
-    color: #c8cbd2;
-  }
-  details.explainer summary {
-    cursor: pointer;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-weight: 700;
-    color: var(--ink);
-  }
-  .guide-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
-    gap: 14px 26px;
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--rule);
-  }
-  .guide-col h3 {
-    margin: 0 0 6px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--accent);
-  }
-  .guide-list { margin: 0; padding: 0; list-style: none; }
-  .guide-list li { margin-bottom: 5px; line-height: 1.42; }
-  .guide-list code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11.5px;
-    font-weight: 700;
-    background: #252a33;
-    color: #f3f1ea;
-    padding: 1px 4px;
-    margin-right: 4px;
-  }
+
+  /* Controls & Table */
   .controls {
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
-    align-items: flex-end;
+    align-items: center;
     gap: 10px;
-    border-bottom: 1px solid var(--rule-strong);
-    padding-bottom: 10px;
     margin-bottom: 10px;
   }
-  .tabs { display: flex; flex-wrap: wrap; gap: 5px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
   .tab-btn {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12px;
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    color: var(--muted);
-    padding: 6px 11px;
+    font-size: 13px;
+    font-weight: 600;
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--ink-2);
+    padding: 7px 13px;
+    border-radius: 9px;
     cursor: pointer;
+    box-shadow: var(--shadow);
+    transition: all 0.12s ease;
   }
-  .tab-btn:hover { background: var(--row-hover); color: var(--ink); }
+  .tab-btn:hover { border-color: var(--accent-bd); color: var(--accent); }
   .tab-btn.active {
-    background: var(--ink);
-    border-color: var(--ink);
-    color: #101215;
-    font-weight: 700;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #ffffff;
   }
   .filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .filters input[type="text"] {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12px;
-    padding: 5px 8px;
-    border: 1px solid var(--rule-strong);
-    background: var(--paper);
+    font-size: 13px;
+    padding: 6px 11px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--card);
     color: var(--ink);
-    width: 175px;
+    width: 170px;
+    outline: none;
   }
+  .filters input[type="text"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
   .filters input[type="text"]::placeholder { color: var(--muted); }
   .pill {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    color: var(--ink);
-    padding: 5px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--ink-2);
+    padding: 6px 10px;
+    border-radius: 8px;
     cursor: pointer;
+    transition: all 0.12s ease;
   }
-  .pill:hover { background: var(--row-hover); }
+  .pill:hover { background: var(--row-hover); color: var(--accent); }
   .pill.active {
     background: var(--accent-bg);
-    border-color: var(--accent);
+    border-color: var(--accent-bd);
     color: var(--accent);
-    font-weight: 700;
   }
+
+  /* Compact Pop-down Guide */
+  .guide-drawer {
+    display: none;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow);
+    font-size: 12.5px;
+    color: var(--ink-2);
+  }
+  .guide-drawer.open { display: block; }
+  .guide-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+  }
+  .guide-items span { white-space: nowrap; }
+  .guide-items code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    font-weight: 700;
+    background: var(--card-soft);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--ink);
+    margin-right: 4px;
+  }
+
   .table-meta {
     display: flex;
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 8px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11.5px;
+    font-size: 12.5px;
     color: var(--muted);
-    margin-bottom: 6px;
+    margin-bottom: 8px;
+    padding: 0 2px;
+    font-variant-numeric: tabular-nums;
   }
+  .table-meta strong { color: var(--ink-2); }
   .table-wrap {
     overflow-x: auto;
-    background: var(--paper);
-    border: 1px solid var(--rule);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
   }
   table {
     width: 100%;
     border-collapse: collapse;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12.5px;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
   }
-  thead tr.super-head th {
-    position: static;
-    background: #14171c;
-    border-bottom: 1px solid var(--rule);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    color: var(--muted);
-    text-align: center;
-    cursor: default;
-    padding: 5px 8px;
-  }
-  thead tr.super-head th:hover { background: #14171c; }
   thead th {
     position: sticky;
     top: 0;
-    background: #1d2129;
-    border-bottom: 2px solid var(--rule-strong);
-    padding: 7px 8px;
+    background: #f8fafc;
+    border-bottom: 1px solid var(--border-strong);
+    padding: 10px 10px;
     text-align: right;
     font-size: 11px;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--ink);
+    color: var(--muted);
     cursor: pointer;
     user-select: none;
     white-space: nowrap;
   }
   thead th.left { text-align: left; }
-  thead th.group-sep, tbody td.group-sep { border-left: 2px solid var(--rule-strong); }
-  thead th:hover { background: #262c36; }
+  thead th.group-sep, tbody td.group-sep { border-left: 1px solid var(--border); }
+  thead th:hover { background: #f1f5f9; color: var(--ink); }
   thead th .sort-arrow { color: var(--accent); font-size: 10px; margin-left: 3px; }
-  tbody tr { border-bottom: 1px solid #22262e; }
+  tbody tr { border-bottom: 1px solid #f1f5f9; transition: background 0.08s ease; }
   tbody tr:nth-child(even) { background: var(--row-alt); }
   tbody tr:hover { background: var(--row-hover); }
-  tbody td { padding: 6px 8px; text-align: right; white-space: nowrap; }
+  tbody td { padding: 8px 10px; text-align: right; white-space: nowrap; color: var(--ink-2); }
   tbody td.left { text-align: left; }
   td.player-cell {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    font-size: 13px;
+    font-size: 13.5px;
     font-weight: 600;
-    color: #f0eee6;
+    color: var(--ink);
   }
+  .sub-num { color: var(--muted); font-size: 11.5px; margin-left: 3px; }
   .tag {
     display: inline-block;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 10px;
-    padding: 1px 4px;
-    border: 1px solid var(--rule-strong);
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
     color: var(--muted);
-    margin-left: 5px;
+    margin-left: 6px;
     vertical-align: 1px;
   }
   .tag-rook { border-color: var(--accent-bd); color: var(--accent); background: var(--accent-bg); }
-  .tag-ret { border-color: rgba(217, 160, 91, 0.4); color: #e2b478; background: rgba(217, 160, 91, 0.12); }
-  .tag-inj { border-color: var(--warn-bd); color: var(--warn); background: var(--warn-bg); font-weight: 700; }
+  .tag-ret { border-color: #fed7aa; color: var(--orange); background: #fff7ed; }
+  .tag-inj { border-color: var(--amber-bd); color: var(--amber); background: var(--amber-bg); }
   .pos { color: var(--pos); font-weight: 700; }
   .neg { color: var(--neg); font-weight: 700; }
   .muted { color: var(--muted); }
-  .edge-pill { display: inline-block; padding: 1px 5px; min-width: 54px; text-align: right; }
-  .edge-pos { background: var(--pos-bg); color: var(--pos); font-weight: 700; }
-  .edge-neg { background: var(--neg-bg); color: var(--neg); font-weight: 700; }
-  .edge-flat { color: var(--muted); }
+  .edge-pill {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 6px;
+    min-width: 52px;
+    text-align: right;
+    font-weight: 700;
+  }
+  .edge-pos { background: var(--pos-bg); color: var(--pos); }
+  .edge-neg { background: var(--neg-bg); color: var(--neg); }
+  .edge-flat { color: var(--muted); font-weight: 500; }
   .call-badge {
     display: inline-block;
-    font-size: 10.5px;
-    padding: 1px 6px;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
     border: 1px solid transparent;
     font-weight: 700;
-    min-width: 56px;
+    min-width: 58px;
     text-align: center;
   }
   .call-hit { color: var(--pos); background: var(--pos-bg); border-color: var(--pos-bd); }
   .call-miss { color: var(--neg); background: var(--neg-bg); border-color: var(--neg-bd); }
-  .call-agree { color: var(--muted); background: #1e222a; border-color: var(--rule); font-weight: 600; }
+  .call-agree { color: var(--muted); background: var(--card-soft); border-color: var(--border); font-weight: 600; }
+
   footer {
-    margin-top: 20px;
-    padding-top: 10px;
-    border-top: 1px solid var(--rule);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
+    margin-top: 18px;
+    font-size: 12px;
     color: var(--muted);
     display: flex;
     justify-content: space-between;
@@ -1091,9 +1107,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <div class="wrap">
   <header>
-    <div class="kicker">Fantasy Basketball Draft Engine &bull; Strict Out-of-Sample Multi-Season Audit</div>
-    <h1 id="page-title">2026&ndash;27 Projected Top 150 &amp; Real-Time Edge Replay</h1>
-    <p class="subtitle" id="page-subtitle"></p>
+    <div class="title-row">
+      <h1 id="page-title">2026&ndash;27 Draft Board</h1>
+      <span class="split-badge live" id="split-badge">LIVE</span>
+    </div>
+    <div class="header-meta" id="header-meta"></div>
   </header>
 
   <div class="season-bar" id="season-bar"></div>
@@ -1101,11 +1119,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <section class="replay-panel">
     <div class="replay-top">
       <div class="replay-controls">
-        <button class="play-btn" id="play-btn">&#9654; Play (4 g/s)</button>
-        <button class="mini-btn" id="reset-btn">&#8634; Game 1</button>
+        <button class="play-btn" id="play-btn">&#9654; Play</button>
+        <button class="mini-btn" id="reset-btn">G 1</button>
         <button class="mini-btn" id="end-btn">End</button>
-        <button class="mini-btn active" data-speed="250">4 g/s</button>
-        <button class="mini-btn" data-speed="125">8 g/s</button>
+        <button class="mini-btn active" data-speed="250">4&times;</button>
+        <button class="mini-btn" data-speed="125">8&times;</button>
       </div>
       <div class="replay-clock" id="replay-clock"></div>
     </div>
@@ -1115,68 +1133,44 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <span class="slider-end right" id="slider-max-lbl">G 82</span>
     </div>
     <div class="chart-header">
-      <div class="chart-title" id="chart-title">Season Trajectory (Click chart to jump to any game)</div>
+      <div class="chart-title">Season Trajectory (click chart to scrub)</div>
       <div class="chart-modes">
-        <button class="mini-btn active" data-chart="t15_fpts">Top 15 Targets vs Fades (FPTS)</button>
-        <button class="mini-btn" data-chart="top150_fpts">Top 150 Model vs ADP (FPTS)</button>
-        <button class="mini-btn" data-chart="corr_r">Top 150 Edge Corr (r)</button>
+        <button class="mini-btn active" data-chart="t15_fpts">Top 15 Calls</button>
+        <button class="mini-btn" data-chart="top150_fpts">Top 150 FPTS</button>
+        <button class="mini-btn" data-chart="corr_r">Edge Corr (r)</button>
       </div>
     </div>
-    <svg id="edge-chart" viewBox="0 0 1000 118" preserveAspectRatio="none"></svg>
+    <svg id="edge-chart" viewBox="0 0 1000 116" preserveAspectRatio="none"></svg>
   </section>
 
-  <div class="section-kicker" id="hero-kicker">Total Edge &amp; Fantasy Points Gained</div>
   <section class="stats-grid" id="hero-cards"></section>
-
-  <div class="section-kicker">Ranking Quality &amp; Sleeper Diagnostics</div>
-  <section class="stats-grid" id="detail-cards"></section>
-
   <div class="bands" id="band-strip"></div>
-
-  <details class="explainer">
-    <summary>Column Guide &amp; How to Read This Board (Click to Expand)</summary>
-    <div class="guide-grid">
-      <div class="guide-col">
-        <h3>Pre-Season Projection Columns</h3>
-        <ul class="guide-list">
-          <li><code>Rk</code> Model's projected draft rank (#1&ndash;#150), sorted by <strong>Model Proj</strong>.</li>
-          <li><code>ADP Rk</code> Consensus ADP rank position (1st, 2nd, ..., 150th player in ADP order).</li>
-          <li><code>Avg ADP</code> Raw average pick number across fantasy platforms (e.g., <code>14.5</code>).</li>
-          <li><code>&Delta;Rk</code> <strong>ADP Rk minus Model Rk.</strong> Positive (green) = model ranked player higher than ADP; negative = lower.</li>
-          <li><code>ADP Proj</code> Expected <strong>Availability-Adjusted FPPG (<code>AdjFPPG</code>)</strong> implied by that draft slot from the prior season's curve (65-game scale).</li>
-          <li><code>Edge</code> Model's predicted edge <strong>relative to the average Top-150 drafted peer</strong> (in <code>AdjFPPG</code>). Between <code>-0.25</code> and <code>+0.25</code> = agrees with ADP.</li>
-          <li><code>Model Proj</code> Final projected <code>AdjFPPG</code> (strictly out-of-sample — trained only on earlier seasons).</li>
-        </ul>
-      </div>
-      <div class="guide-col">
-        <h3>Game-by-Game Actuals at Current Slider Point</h3>
-        <ul class="guide-list">
-          <li><code>GP</code> Games played through the selected team-game checkpoint (<code>0</code> in red = missed all games to this point).</li>
-          <li><code>FPTS</code> Exact cumulative fantasy points scored through this game (ESPN default points scoring).</li>
-          <li><code>FPPG</code> Actual raw fantasy points per game in games played.</li>
-          <li><code>Act Adj</code> Actual <strong>Availability-Adjusted FPPG</strong> at this point in the season (missed games filled at the live checkpoint waiver rate).</li>
-          <li><code>Act Rk</code> Actual rank across the entire NBA at this point in the season by <code>Act Adj</code>.</li>
-          <li><code>Act vs ADP</code> Player's <code>Act Adj</code> minus what their <strong>ADP slot</strong> is producing at this exact checkpoint.</li>
-          <li><code>Call</code> Grades meaningful disagreements (<code>|Edge| &ge; 0.25</code> or <code>|&Delta;Rk| &ge; 3</code>): <strong>TGT &check;</strong> / <strong>FADE &check;</strong> / <strong>TGT &cross;</strong> / <strong>FADE &cross;</strong> / <strong>AGREE</strong>.</li>
-        </ul>
-      </div>
-    </div>
-  </details>
 
   <div class="controls">
     <div class="tabs" id="tabs">
-      <button class="tab-btn active" data-tab="stage2_top150">Stage 2: Top 150 (ADP + Edge)</button>
-      <button class="tab-btn" data-tab="stage1_top150">Stage 1: Pure Stats Top 150 (0% ADP)</button>
-      <button class="tab-btn" data-tab="deep_sleepers">ADP 151&ndash;225 Sleepers</button>
+      <button class="tab-btn active" data-tab="stage2_top150">Top 150</button>
+      <button class="tab-btn" data-tab="stage1_top150">Pure Stats (0% ADP)</button>
+      <button class="tab-btn" data-tab="deep_sleepers">Sleepers (151&ndash;225)</button>
     </div>
     <div class="filters">
-      <input type="text" id="search" placeholder="Filter player or pos...">
+      <input type="text" id="search" placeholder="Search player or pos...">
       <button class="pill active" data-filter="all">All</button>
       <button class="pill" data-filter="top15">Top 15</button>
-      <button class="pill" data-filter="pos">Targets (&ge; +0.25)</button>
-      <button class="pill" data-filter="neg">Fades (&le; &minus;0.25)</button>
-      <button class="pill" data-filter="gt150">ADP &gt; 150</button>
+      <button class="pill" data-filter="pos">Targets</button>
+      <button class="pill" data-filter="neg">Fades</button>
       <button class="pill" data-filter="rook">Rookies</button>
+      <button class="pill" id="guide-toggle">? Guide</button>
+    </div>
+  </div>
+
+  <div class="guide-drawer" id="guide-drawer">
+    <div class="guide-items">
+      <span><code>&Delta;Rk</code> ADP rank minus model rank (+)</span>
+      <span><code>Edge</code> Predicted AdjFPPG vs. peers</span>
+      <span><code>Proj</code> Pre-season AdjFPPG (65g scale)</span>
+      <span><code>Act Rk</code> Actual NBA rank at game</span>
+      <span><code>vs ADP</code> Actual AdjFPPG minus ADP slot</span>
+      <span><code>Call</code> Grades |Edge| &ge; 0.25 or |&Delta;Rk| &ge; 3</span>
     </div>
   </div>
 
@@ -1188,26 +1182,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr class="super-head">
-          <th colspan="9">Pre-Season Model Projection (Zero Leakage)</th>
-          <th colspan="7" class="group-sep" id="actuals-super-head">Season Actuals Through Selected Game</th>
-        </tr>
         <tr>
           <th data-col="rk">Rk<span class="sort-arrow"></span></th>
           <th class="left" data-col="p">Player<span class="sort-arrow"></span></th>
           <th class="left" data-col="pos">Pos<span class="sort-arrow"></span></th>
-          <th data-col="mrk">ADP Rk<span class="sort-arrow"></span></th>
-          <th data-col="adp">Avg ADP<span class="sort-arrow"></span></th>
+          <th data-col="mrk">ADP<span class="sort-arrow"></span></th>
           <th data-col="drk">&Delta;Rk<span class="sort-arrow"></span></th>
-          <th data-col="mp">ADP Proj<span class="sort-arrow"></span></th>
           <th data-col="e">Edge<span class="sort-arrow"></span></th>
-          <th data-col="pr">Model Proj<span class="sort-arrow"></span></th>
+          <th data-col="pr">Proj<span class="sort-arrow"></span></th>
           <th class="group-sep" data-col="gp">GP<span class="sort-arrow"></span></th>
           <th data-col="fpts">FPTS<span class="sort-arrow"></span></th>
-          <th data-col="act_fppg">FPPG<span class="sort-arrow"></span></th>
-          <th data-col="act_adj">Act Adj<span class="sort-arrow"></span></th>
           <th data-col="act_rank">Act Rk<span class="sort-arrow"></span></th>
-          <th data-col="act_vs_adp">Act vs ADP<span class="sort-arrow"></span></th>
+          <th data-col="act_vs_adp">vs ADP<span class="sort-arrow"></span></th>
           <th data-col="call_score">Call<span class="sort-arrow"></span></th>
         </tr>
       </thead>
@@ -1216,8 +1202,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <footer>
-    <span>Generated by build_board_page.py from draft_engine.py (ESPN Default Scoring)</span>
-    <span>8-Season Backtest (1,152 drafts/strategy): +1,725.8 FPTS greedy / +2,000.9 FPTS reach-vs-wait (8/8 winning seasons)</span>
+    <span>Strict out-of-sample pre-season projections (ESPN default scoring)</span>
+    <span>8-Yr Backtest (1,152 drafts): +1,966.5 FPTS Default / +2,467.3 FPTS Yahoo (Reach-vs-Wait)</span>
   </footer>
 </div>
 
@@ -1227,7 +1213,7 @@ const ANCHORS_RK = APP.anchor_ranks;
 
 const state = {
   season: APP.default_season,
-  step: 0, // 0-indexed (0 = Game 1)
+  step: 0,
   tab: "stage2_top150",
   filter: "all",
   search: "",
@@ -1238,7 +1224,6 @@ const state = {
   timer: null,
 };
 
-// Pre-build cumulative lookup tables per season on first access for instant 60fps scrubbing
 const seasonCache = {};
 
 function getSeasonCum(seasonKey) {
@@ -1376,16 +1361,16 @@ function renderSeasonBar() {
   `).join("");
 
   let simHtml = "";
-  if (S.sim_wait && S.sim_greedy) {
-    simHtml = `12-Team Sim (144 drafts): Greedy <strong>${fmtSignedInt(S.sim_greedy.diff)}</strong> | Wait <strong>${fmtSignedInt(S.sim_wait.diff)}</strong> FPTS (Win ${S.sim_wait.win_pct.toFixed(1)}%)`;
+  if (S.sim_wait) {
+    simHtml = `Sim: <strong>${fmtSignedInt(S.sim_wait.diff)} FPTS</strong> &middot; ${S.sim_wait.win_pct.toFixed(0)}% Win`;
   } else {
-    simHtml = `Live Out-of-Sample Season (${S.max_step} team-games played so far)`;
+    simHtml = `Live season &middot; ${S.max_step} team-games`;
   }
 
   document.getElementById("season-bar").innerHTML = `
-    <div class="season-group"><span class="season-group-lbl">CV Folds:</span>${mkBtns(cv)}</div>
-    <div class="season-group"><span class="season-group-lbl">Holdout:</span>${mkBtns(ho)}</div>
-    <div class="season-group"><span class="season-group-lbl">Live:</span>${mkBtns(lv)}</div>
+    <div class="season-group"><span class="season-group-lbl">CV</span>${mkBtns(cv)}</div>
+    <div class="season-group"><span class="season-group-lbl">Holdout</span>${mkBtns(ho)}</div>
+    <div class="season-group"><span class="season-group-lbl">Live</span>${mkBtns(lv)}</div>
     <div class="season-sim-note">${simHtml}</div>
   `;
 
@@ -1399,152 +1384,88 @@ function renderChart() {
   const arr = S.ts[state.chartMode];
   const n = arr.length;
   const svg = document.getElementById("edge-chart");
-  const W = 1000, H = 118, padL = 56, padR = 16, padT = 12, padB = 20;
+  const W = 1000, H = 116, padL = 56, padR = 16, padT = 14, padB = 20;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
 
   let minV = Math.min(0, ...arr);
   let maxV = Math.max(0, ...arr);
   if (maxV - minV < 1e-4) { maxV += 1; minV -= 1; }
-  const margin = (maxV - minV) * 0.12;
+  const margin = (maxV - minV) * 0.14;
   minV -= margin; maxV += margin;
 
   const xOf = (i) => padL + (n > 1 ? (i / (n - 1)) * plotW : plotW / 2);
   const yOf = (v) => padT + ((maxV - v) / (maxV - minV)) * plotH;
   const y0 = yOf(0);
 
-  // Full background dim trace + active trace up to state.step
   const fullPts = arr.map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
-  const curPts = arr.slice(0, state.step + 1).map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
+  const curSlice = arr.slice(0, state.step + 1);
+  const curPts = curSlice.map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
   const curVal = arr[state.step];
   const curX = xOf(state.step);
   const curY = yOf(curVal);
-  const strokeCol = curVal >= 0 ? "#4ade80" : "#f87171";
+  const strokeCol = curVal >= 0 ? "#059669" : "#e11d48";
+  const fillCol = curVal >= 0 ? "rgba(5,150,105,0.12)" : "rgba(225,29,72,0.10)";
+  const areaPts = `${xOf(0).toFixed(1)},${y0.toFixed(1)} ${curPts} ${curX.toFixed(1)},${y0.toFixed(1)}`;
 
   const fmtTick = (v) => state.chartMode === "corr_r" ? (v >= 0 ? "+" : "") + v.toFixed(2) : fmtSignedInt(v);
 
   svg.innerHTML = `
-    <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#232730" stroke-width="1"/>
-    <line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="#232730" stroke-width="1"/>
-    <line x1="${padL}" y1="${y0.toFixed(1)}" x2="${W - padR}" y2="${y0.toFixed(1)}" stroke="#464d5b" stroke-width="1" stroke-dasharray="4,4"/>
-    <text x="${padL - 6}" y="${padT + 9}" text-anchor="end" fill="#8b919c" font-family="ui-monospace,monospace" font-size="10">${fmtTick(maxV)}</text>
-    <text x="${padL - 6}" y="${(y0 + 3).toFixed(1)}" text-anchor="end" fill="#8b919c" font-family="ui-monospace,monospace" font-size="10">0</text>
-    <text x="${padL - 6}" y="${H - padB}" text-anchor="end" fill="#8b919c" font-family="ui-monospace,monospace" font-size="10">${fmtTick(minV)}</text>
-    <polyline fill="none" stroke="#363c48" stroke-width="1.5" points="${fullPts}"/>
-    <polyline fill="none" stroke="${strokeCol}" stroke-width="2.4" points="${curPts}"/>
-    <line x1="${curX.toFixed(1)}" y1="${padT}" x2="${curX.toFixed(1)}" y2="${H - padB}" stroke="#e7e5dd" stroke-width="1" stroke-dasharray="2,2" opacity="0.65"/>
-    <circle cx="${curX.toFixed(1)}" cy="${curY.toFixed(1)}" r="4.2" fill="${strokeCol}" stroke="#101215" stroke-width="1.5"/>
-    <text x="${Math.min(W - padR - 4, Math.max(padL + 6, curX + 8)).toFixed(1)}" y="${Math.max(padT + 11, curY - 7).toFixed(1)}" fill="${strokeCol}" font-family="ui-monospace,monospace" font-size="11" font-weight="700">${fmtTick(curVal)}</text>
-    <text x="${padL}" y="${H - 5}" fill="#8b919c" font-family="ui-monospace,monospace" font-size="10">Game 1</text>
-    <text x="${W - padR}" y="${H - 5}" text-anchor="end" fill="#8b919c" font-family="ui-monospace,monospace" font-size="10">Game ${n}</text>
+    <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#eef2f7" stroke-width="1"/>
+    <line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="#eef2f7" stroke-width="1"/>
+    <line x1="${padL}" y1="${y0.toFixed(1)}" x2="${W - padR}" y2="${y0.toFixed(1)}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4,4"/>
+    <text x="${padL - 8}" y="${padT + 9}" text-anchor="end" fill="#64748b" font-size="10.5">${fmtTick(maxV)}</text>
+    <text x="${padL - 8}" y="${(y0 + 3).toFixed(1)}" text-anchor="end" fill="#64748b" font-size="10.5">0</text>
+    <text x="${padL - 8}" y="${H - padB}" text-anchor="end" fill="#64748b" font-size="10.5">${fmtTick(minV)}</text>
+    <polyline fill="none" stroke="#cbd5e1" stroke-width="1.5" points="${fullPts}"/>
+    <polygon fill="${fillCol}" points="${areaPts}"/>
+    <polyline fill="none" stroke="${strokeCol}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" points="${curPts}"/>
+    <line x1="${curX.toFixed(1)}" y1="${padT}" x2="${curX.toFixed(1)}" y2="${H - padB}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2,2"/>
+    <circle cx="${curX.toFixed(1)}" cy="${curY.toFixed(1)}" r="4.5" fill="${strokeCol}" stroke="#ffffff" stroke-width="2"/>
+    <text x="${Math.min(W - padR - 4, Math.max(padL + 6, curX + 9)).toFixed(1)}" y="${Math.max(padT + 12, curY - 7).toFixed(1)}" fill="${strokeCol}" font-size="11.5" font-weight="700">${fmtTick(curVal)}</text>
+    <text x="${padL}" y="${H - 5}" fill="#64748b" font-size="10.5">Game 1</text>
+    <text x="${W - padR}" y="${H - 5}" text-anchor="end" fill="#64748b" font-size="10.5">Game ${n}</text>
   `;
-}
-
-function renderCards(elId, cards) {
-  document.getElementById(elId).innerHTML = cards.map(c => `
-    <div class="stat-box ${c.featured ? "featured" : ""}">
-      <div class="stat-label">${c.label}</div>
-      <div class="stat-val ${c.cls || ""}">${c.val}</div>
-      <div class="stat-sub">${c.sub}</div>
-    </div>
-  `).join("");
 }
 
 function renderAll() {
   const S = APP.seasons[state.season];
   const cum = getSeasonCum(state.season);
   const cp = S.checkpoints[state.step];
-  const splitTag = S.split.toUpperCase();
 
-  document.getElementById("page-title").innerHTML = `${S.season} Projected Top 150 &amp; Real-Time Edge Replay <span class="tag ${S.split === "live" ? "tag-rook" : (S.split === "holdout" ? "tag-inj" : "")}">${splitTag}</span>`;
-  document.getElementById("page-subtitle").innerHTML =
-    `Strict out-of-sample pre-season board (${S.split === "holdout" ? "trained strictly on 2016–17..2023–24" : "trained strictly on seasons before " + S.season}), ` +
-    `evaluated at <strong>Game ${cp.g} / ${S.max_step}</strong> (<strong>${cp.date}</strong> &bull; ${cp.reg} NBA games &bull; ${cp.pct}% of season).`;
+  document.getElementById("page-title").textContent = `${S.season} Draft Board`;
+  const badge = document.getElementById("split-badge");
+  badge.textContent = S.split.toUpperCase();
+  badge.className = `split-badge ${S.split}`;
 
+  document.getElementById("header-meta").innerHTML =
+    `<strong>Game ${cp.g}/${S.max_step}</strong> &middot; ${cp.date} &middot; ${cp.pct}% of season`;
   document.getElementById("replay-clock").innerHTML =
-    `<strong>Game ${cp.g} / ${S.max_step}</strong> <span>&bull; ${cp.date} &bull; ${cp.reg} NBA games (${cp.pct}%) &bull; Waiver ${cp.waiver.toFixed(2)}</span>`;
+    `Game ${cp.g} / ${S.max_step} <span>&middot; ${cp.date} &middot; ${cp.reg} NBA games</span>`;
   document.getElementById("slider-max-lbl").textContent = `G ${S.max_step}`;
-  document.getElementById("actuals-super-head").textContent = `Season Actuals Through Game ${cp.g} (${cp.date} • ${cp.reg} NBA Games)`;
-  document.getElementById("hero-kicker").textContent = `Total Edge & Fantasy Points Gained — ${S.season} Through Game ${cp.g} (${cp.date})`;
 
-  // Enrich Stage 2 (all 225) & Stage 1 (top 150) at current checkpoint
   const s2All = S.s2_all.map(r => enrichRow(r, cum, cp));
   const s2Top150 = s2All.slice(0, 150);
   const mktTop150 = s2All.filter(r => r.mrk !== null && r.mrk <= 150).sort((a, b) => a.mrk - b.mrk);
   const deepPool = s2All.filter(r => r.mrk !== null && r.mrk > 150);
   const s1Top150 = S.s1_150.map(r => enrichRow(r, cum, cp));
 
-  // Hero Box 1: Top 150 Model vs ADP FPTS
-  const s2_150_fpts = s2Top150.reduce((a, r) => a + r.fpts, 0);
-  const mkt_150_fpts = mktTop150.reduce((a, r) => a + r.fpts, 0);
-  const s2_150_diff = s2_150_fpts - mkt_150_fpts;
-  const s2_150_adj_diff = s2Top150.reduce((a, r) => a + r.act_adj, 0) - mktTop150.reduce((a, r) => a + r.act_adj, 0);
+  const s2_150_diff = s2Top150.reduce((a, r) => a + r.fpts, 0) - mktTop150.reduce((a, r) => a + r.fpts, 0);
   const s2_swaps = s2Top150.filter(r => r.mrk > 150).length;
 
-  // Hero Box 2: Top 150 Targets (>= +0.25) vs Fades (<= -0.25)
-  const tAll = mktTop150.filter(r => r.e >= 0.25);
-  const fAll = mktTop150.filter(r => r.e <= -0.25);
-  const tAvgVs = tAll.length ? tAll.reduce((a, r) => a + r.act_vs_adp, 0) / tAll.length : 0;
-  const fAvgVs = fAll.length ? fAll.reduce((a, r) => a + r.act_vs_adp, 0) / fAll.length : 0;
-  const tAvgFpts = tAll.length ? tAll.reduce((a, r) => a + r.fpts, 0) / tAll.length : 0;
-  const fAvgFpts = fAll.length ? fAll.reduce((a, r) => a + r.fpts, 0) / fAll.length : 0;
-
-  // Hero Box 3: Top 15 Highest-Conviction Targets vs Top 15 Biggest Fades
   const byE = [...mktTop150].sort((a, b) => b.e - a.e);
   const t15 = byE.slice(0, 15);
   const f15 = byE.slice(-15);
-  const t15Fpts = t15.reduce((a, r) => a + r.fpts, 0);
-  const f15Fpts = f15.reduce((a, r) => a + r.fpts, 0);
-  const t15Diff = t15Fpts - f15Fpts;
-  const t15VsAvg = t15.reduce((a, r) => a + r.act_vs_adp, 0) / 15;
-  const f15VsAvg = f15.reduce((a, r) => a + r.act_vs_adp, 0) / 15;
-  const t15VsSum = (t15VsAvg - f15VsAvg) * 15;
+  const t15Diff = t15.reduce((a, r) => a + r.fpts, 0) - f15.reduce((a, r) => a + r.fpts, 0);
+  const t15VsSpread = (t15.reduce((a, r) => a + r.act_vs_adp, 0) - f15.reduce((a, r) => a + r.act_vs_adp, 0)) / 15;
 
-  // Hero Box 4: Top 15 Overall Board (Picks #1-#15)
-  const s2_15_fpts = s2Top150.slice(0, 15).reduce((a, r) => a + r.fpts, 0);
-  const mkt_15_fpts = mktTop150.slice(0, 15).reduce((a, r) => a + r.fpts, 0);
-  const s1_15_fpts = s1Top150.slice(0, 15).reduce((a, r) => a + r.fpts, 0);
-
-  renderCards("hero-cards", [
-    {
-      featured: true,
-      label: "Top 150 — Model vs. ADP Total FPTS",
-      val: `${fmtSignedInt(s2_150_diff)} FPTS`,
-      cls: s2_150_diff >= 0 ? "pos" : "neg",
-      sub: `Model Top 150: <strong>${fmtInt(s2_150_fpts)}</strong> vs ADP: <strong>${fmtInt(mkt_150_fpts)}</strong><br>Across ${s2_swaps} board swaps (${fmtSigned(s2_150_adj_diff)} sum AdjFPPG)`,
-    },
-    {
-      featured: true,
-      label: "Top 150 — Targets vs. Fades Edge",
-      val: `${fmtSigned(tAvgVs - fAvgVs, 2)} AdjFPPG`,
-      cls: (tAvgVs - fAvgVs) >= 0 ? "pos" : "neg",
-      sub: `<strong>${tAll.length} Targets</strong> (&ge;+0.25): ${fmtSigned(tAvgVs)} vs ADP (${fmtInt(tAvgFpts)} FPTS/p)<br><strong>${fAll.length} Fades</strong> (&le;&minus;0.25): ${fmtSigned(fAvgVs)} vs ADP (${fmtInt(fAvgFpts)} FPTS/p) &bull; <strong>${fmtSignedInt(tAvgFpts - fAvgFpts)}</strong>/p`,
-    },
-    {
-      featured: true,
-      label: "Top 15 Targets vs. Top 15 Fades",
-      val: `${fmtSignedInt(t15Diff)} FPTS`,
-      cls: t15Diff >= 0 ? "pos" : "neg",
-      sub: `Top 15 Targets: <strong>${fmtInt(t15Fpts)}</strong> (${fmtSigned(t15VsAvg)} vs ADP) &bull; Fades: <strong>${fmtInt(f15Fpts)}</strong> (${fmtSigned(f15VsAvg)})<br>Total AdjFPPG edge spread: <strong class="${t15VsSum >= 0 ? "pos" : "neg"}">${fmtSigned(t15VsSum)}</strong>`,
-    },
-    {
-      featured: true,
-      label: "Our Top 15 Overall (Picks #1–#15)",
-      val: `${fmtInt(s2_15_fpts)} FPTS`,
-      cls: (s2_15_fpts - mkt_15_fpts) >= 0 ? "pos" : "",
-      sub: `Stage 2 vs ADP Top 15: <strong>${fmtSignedInt(s2_15_fpts - mkt_15_fpts)} FPTS</strong><br>Stage 1 (0% ADP) Top 15: <strong class="${(s1_15_fpts - mkt_15_fpts) >= 0 ? "pos" : "neg"}">${fmtSignedInt(s1_15_fpts - mkt_15_fpts)} FPTS</strong> (${fmtInt(s1_15_fpts)})`,
-    },
-  ]);
-
-  // Diagnostics
   const corrAll = pearson(mktTop150.map(r => r.re), mktTop150.map(r => r.act_vs_adp));
   let flipsTotal = 0, flipsWon = 0;
   for (let i = 0; i < mktTop150.length; i++) {
     for (let j = i + 1; j < mktTop150.length; j++) {
-      const a = mktTop150[i], b = mktTop150[j];
-      if (b.pr > a.pr) {
+      if (mktTop150[j].pr > mktTop150[i].pr) {
         flipsTotal++;
-        if (b.act_adj > a.act_adj) flipsWon++;
+        if (mktTop150[j].act_adj > mktTop150[i].act_adj) flipsWon++;
       }
     }
   }
@@ -1557,49 +1478,53 @@ function renderAll() {
   const s1Cap = s1Top150.filter(r => r.in_t150).length;
   const mktCap = mktTop150.filter(r => r.in_t150).length;
   const s2Cap = s2Top150.filter(r => r.in_t150).length;
-  const s1Gt = s1Top150.filter(r => r.mrk === null || r.mrk > 150);
-  const s1GtHit = s1Gt.filter(r => r.in_t150).length;
 
-  renderCards("detail-cards", [
+  const cards = [
     {
-      label: "Top-150 Edge Correlation (r)",
+      label: "Model vs. ADP (Top 150)",
+      val: `${fmtSignedInt(s2_150_diff)} FPTS`,
+      cls: s2_150_diff >= 0 ? "pos" : "neg",
+      sub: `<strong>${s2Cap}/150</strong> hits (Mkt ${mktCap}) &middot; ${s2_swaps} swaps`,
+    },
+    {
+      label: "Top 15 Targets vs. Fades",
+      val: `${fmtSignedInt(t15Diff)} FPTS`,
+      cls: t15Diff >= 0 ? "pos" : "neg",
+      sub: `<strong>${fmtSigned(t15VsSpread)}</strong> AdjFPPG avg spread`,
+    },
+    {
+      label: "Edge Correlation (r)",
       val: `${corrAll >= 0 ? "+" : ""}${corrAll.toFixed(3)}`,
       cls: corrAll >= 0 ? "pos" : "neg",
-      sub: `Stage 2 True Top-150 Capture: <strong>${s2Cap}/150</strong> vs Market ${mktCap}/150`,
+      sub: `<strong>${flipsPct.toFixed(1)}%</strong> rank flips won (${flipsWon}/${flipsTotal})`,
     },
     {
-      label: "Head-to-Head Rank Flips vs. ADP",
-      val: `${flipsPct.toFixed(1)}%`,
-      cls: flipsPct >= 50 ? "pos" : "neg",
-      sub: `<strong>${flipsWon} / ${flipsTotal}</strong> player-vs-player swaps won at Game ${cp.g}`,
-    },
-    {
-      label: "ADP 151–225 Deep Sleepers",
-      val: `${posDeepHit}/${posDeep.length} (${posDeep.length ? (100 * posDeepHit / posDeep.length).toFixed(1) : "0.0"}%)`,
+      label: "Deep Sleepers (151–225)",
+      val: `${posDeepHit}/${posDeep.length} (${posDeep.length ? (100 * posDeepHit / posDeep.length).toFixed(0) : "0"}%)`,
       cls: "pos",
-      sub: `Pos-edge Top-150 hit rate vs ${negDeepHit}/${negDeep.length} (${negDeep.length ? (100 * negDeepHit / negDeep.length).toFixed(1) : "0.0"}%) for neg-edge`,
+      sub: `vs. <strong>${negDeep.length ? (100 * negDeepHit / negDeep.length).toFixed(0) : "0"}%</strong> for neg-edge`,
     },
-    {
-      label: "Stage 1 Full-NBA Top 150 (0% ADP)",
-      val: `${s1Cap}/150`,
-      cls: s1Cap >= mktCap ? "pos" : "",
-      sub: `vs Market ${mktCap}/150 &bull; ${s1GtHit}/${s1Gt.length} ADP&gt;150 hits`,
-    },
-  ]);
+  ];
+  document.getElementById("hero-cards").innerHTML = cards.map(c => `
+    <div class="stat-box">
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-val ${c.cls}">${c.val}</div>
+      <div class="stat-sub">${c.sub}</div>
+    </div>
+  `).join("");
 
-  // Round bands strip
-  const bandDefs = [["R1–2 (1–24)", 1, 24], ["R3–5 (25–60)", 25, 60], ["R6–9 (61–108)", 61, 108], ["R10–13 (109–150)", 109, 150]];
+  const bandDefs = [["R1–2", 1, 24], ["R3–5", 25, 60], ["R6–9", 61, 108], ["R10–13", 109, 150]];
   document.getElementById("band-strip").innerHTML =
-    `<strong>${S.season} Edge Corr by Round (Game ${cp.g}):</strong>` +
+    `<strong>By Round:</strong>` +
     bandDefs.map(([lbl, lo, hi]) => {
       const sub = mktTop150.filter(r => r.mrk >= lo && r.mrk <= hi);
       const rc = pearson(sub.map(r => r.re), sub.map(r => r.act_vs_adp));
-      return `<span>${lbl}: <strong class="${rc >= 0 ? "pos" : "neg"}">${rc >= 0 ? "+" : ""}${rc.toFixed(3)}</strong></span>`;
-    }).join("");
+      return `<span>${lbl} <strong class="${rc >= 0 ? "pos" : "neg"}">${rc >= 0 ? "+" : ""}${rc.toFixed(2)}</strong></span>`;
+    }).join("") +
+    `<span class="sep">|</span><span>Pure Stats (0% ADP): <strong>${s1Cap}/150</strong> hits</span>`;
 
   renderChart();
 
-  // Render active tab table
   const baseRows = state.tab === "stage2_top150" ? s2Top150 : (state.tab === "stage1_top150" ? s1Top150 : deepPool);
   const q = state.search.trim().toLowerCase();
   const filtered = baseRows.filter(r => {
@@ -1607,7 +1532,6 @@ function renderAll() {
     if (state.filter === "top15" && !(r.rk <= 15)) return false;
     if (state.filter === "pos" && !(r.e >= 0.25)) return false;
     if (state.filter === "neg" && !(r.e <= -0.25)) return false;
-    if (state.filter === "gt150" && !(r.mrk === null || r.mrk > 150)) return false;
     if (state.filter === "rook" && r.t !== "ROOK") return false;
     return true;
   });
@@ -1631,41 +1555,38 @@ function renderAll() {
   const hits = filtered.filter(r => evalCall(r).score === 1).length;
   const calls = filtered.filter(r => evalCall(r).score !== 0).length;
   const top150Now = filtered.filter(r => r.in_t150).length;
-  const totFpts = filtered.reduce((a, r) => a + r.fpts, 0);
-  const avgVs = filtered.length ? filtered.reduce((a, r) => a + r.act_vs_adp, 0) / filtered.length : 0;
 
-  document.getElementById("row-count").textContent =
-    `Showing ${filtered.length} players | Total FPTS: ${fmtInt(totFpts)} | Actual Top-150: ${top150Now}/${filtered.length}`;
-  document.getElementById("filtered-summary").textContent =
-    `Avg Actual vs ADP: ${fmtSigned(avgVs)} AdjFPPG | Conviction Calls: ${hits}/${calls} (${calls ? (100 * hits / calls).toFixed(1) : "0.0"}%)`;
+  document.getElementById("row-count").innerHTML =
+    `<strong>${filtered.length}</strong> players &middot; <strong>${top150Now}</strong> actual Top-150`;
+  document.getElementById("filtered-summary").innerHTML =
+    calls ? `Calls: <strong>${hits}/${calls} (${(100 * hits / calls).toFixed(0)}%)</strong>` : "";
 
   document.getElementById("board-body").innerHTML = filtered.map(r => {
     const call = evalCall(r);
     const typeTag = r.t === "ROOK" ? '<span class="tag tag-rook">ROOK</span>' : (r.t === "RET" ? '<span class="tag tag-ret">RET</span>' : "");
     const injTag = r.al ? `<span class="tag tag-inj">${r.al}</span>` : "";
-    const adpRkStr = r.mrk !== null ? `#${r.mrk}` : '<span class="muted">UNR</span>';
-    const adpValStr = r.adp !== null ? fmtNum(r.adp, 1) : '<span class="muted">&mdash;</span>';
+    const adpStr = r.mrk !== null
+      ? `#${r.mrk}<span class="sub-num">(${fmtNum(r.adp, 1)})</span>`
+      : '<span class="muted">UNR</span>';
     const deltaCls = r.drk === null ? "muted" : (r.drk > 0 ? "pos" : (r.drk < 0 ? "neg" : "muted"));
     const deltaStr = r.drk === null ? "&mdash;" : (r.drk > 0 ? "+" + r.drk : String(r.drk));
     const edgeCls = r.e >= 0.25 ? "edge-pos" : (r.e <= -0.25 ? "edge-neg" : "edge-flat");
     const actVsCls = r.act_vs_adp > 0.25 ? "pos" : (r.act_vs_adp < -0.25 ? "neg" : "muted");
     const gpCls = r.gp === 0 ? "neg" : "";
+    const projTip = r.mp !== null ? `ADP Proj: ${fmtNum(r.mp, 2)}` : "";
+    const actTip = `FPPG: ${fmtNum(r.act_fppg, 1)} | Act Adj: ${fmtNum(r.act_adj, 2)}`;
 
     return `<tr>
       <td><strong>#${r.rk}</strong></td>
       <td class="left player-cell">${r.p}${typeTag}${injTag}</td>
       <td class="left muted">${r.pos}</td>
-      <td class="muted">${adpRkStr}</td>
-      <td class="muted">${adpValStr}</td>
+      <td>${adpStr}</td>
       <td class="${deltaCls}">${deltaStr}</td>
-      <td class="muted">${r.mp !== null ? fmtNum(r.mp, 2) : "&mdash;"}</td>
       <td><span class="edge-pill ${edgeCls}">${fmtSigned(r.e, 2)}</span></td>
-      <td><strong>${fmtNum(r.pr, 2)}</strong></td>
+      <td title="${projTip}"><strong>${fmtNum(r.pr, 1)}</strong></td>
       <td class="group-sep ${gpCls}">${r.gp}</td>
       <td>${fmtInt(r.fpts)}</td>
-      <td>${fmtNum(r.act_fppg, 1)}</td>
-      <td>${fmtNum(r.act_adj, 2)}</td>
-      <td>#${r.act_rank}</td>
+      <td title="${actTip}">#${r.act_rank}</td>
       <td class="${actVsCls}">${fmtSigned(r.act_vs_adp, 2)}</td>
       <td><span class="call-badge ${call.cls}">${call.label}</span></td>
     </tr>`;
@@ -1679,8 +1600,7 @@ function stopPlayback() {
   }
   const btn = document.getElementById("play-btn");
   btn.classList.remove("playing");
-  const gps = Math.round(1000 / state.speedMs);
-  btn.innerHTML = `&#9654; Play (${gps} g/s)`;
+  btn.innerHTML = "&#9654; Play";
 }
 
 function startPlayback() {
@@ -1718,7 +1638,6 @@ function selectSeason(seasonKey) {
   renderAll();
 }
 
-// Wire controls
 document.getElementById("play-btn").addEventListener("click", () => {
   if (state.timer !== null) stopPlayback();
   else startPlayback();
@@ -1749,8 +1668,6 @@ document.querySelectorAll("[data-speed]").forEach(btn => {
     if (state.timer !== null) {
       stopPlayback();
       startPlayback();
-    } else {
-      stopPlayback();
     }
   });
 });
@@ -1771,6 +1688,11 @@ document.getElementById("edge-chart").addEventListener("click", e => {
   document.getElementById("game-slider").value = state.step + 1;
   renderAll();
 });
+document.getElementById("guide-toggle").addEventListener("click", e => {
+  const drawer = document.getElementById("guide-drawer");
+  const open = drawer.classList.toggle("open");
+  e.currentTarget.classList.toggle("active", open);
+});
 
 document.querySelectorAll(".tab-btn").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -1782,9 +1704,9 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     renderAll();
   });
 });
-document.querySelectorAll(".pill").forEach(btn => {
+document.querySelectorAll(".pill[data-filter]").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".pill").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".pill[data-filter]").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     state.filter = btn.dataset.filter;
     renderAll();

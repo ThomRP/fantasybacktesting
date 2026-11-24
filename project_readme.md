@@ -14,9 +14,9 @@ A concise technical reference for the leak-free fantasy basketball draft engine.
 
 ## Active Files
 
-* `draft_engine.py` — Unified Stage-1/Stage-2 projection engine, live injury fetcher, and 12-team ESPN draft simulator.
-* `build_board_page.py` / `board_2026_27.html` — Dark-mode multi-season (6 CV + 2 Holdout + Live `2026–27`) interactive Top-150 & real-time 4 games/sec replay dashboard.
-* `download.py`, `backtest_common.py`, `adp_names.py`, `backtest_rookies.py`, `backtest_rookie_plots.py`, `backtest_full_pool.py`, `compare_early_season.py` — Data ingestion and shared evaluation utilities.
+* `draft_engine.py` — Unified Stage-1/Stage-2 projection engine (with Rookie preseason Vegas win totals & opt-in `--advanced-stats`), live injury fetcher, and 12-team ESPN draft simulator.
+* `build_board_page.py` / `board_2026_27.html` — Bright, streamlined multi-season (6 CV + 2 Holdout + Live `2026–27`) interactive Top-150 & real-time 4 games/sec replay dashboard.
+* `download.py`, `download_vegas_odds.py`, `backtest_common.py`, `adp_names.py`, `backtest_rookies.py`, `backtest_rookie_plots.py`, `backtest_full_pool.py`, `compare_early_season.py` — Data ingestion (including verified preseason Vegas win totals) and shared evaluation utilities.
 * `test_injury_cap.py`, `test_reach_or_wait.py` — Unit tests (10/10 passing).
 
 ---
@@ -25,8 +25,8 @@ A concise technical reference for the leak-free fantasy basketball draft engine.
 
 1,152 simulated 12-team × 13-round ESPN snake drafts/strategy across 6 CV (`2018–19`–`2023–24`) + 2 untouched Holdout (`2024–25`, `2025–26`) seasons:
 
-* **Default Scoring — `residual_unified`:** `+1,725.8` FPTS (`+6.88%`) all 8 yrs | `+1,885.1` (`+7.47%`) Holdout | Avg Rank `4.29` | Win % `28.0%` | 0g Busts `0.03` (`0.00` HO).
-* **Default Scoring — `residual_wait`:** **`+2,000.9` FPTS (`+7.99%`)** all 8 yrs (`8/8` winning seasons) | **`+2,532.7` (`+10.06%`)** Holdout | Avg Rank `4.01` (`3.70` HO) | Win % `29.7%` (`37.2%` HO) | 0g Busts `0.02` (`0.00` HO).
-* **Yahoo Scoring — `residual_unified`:** `+2,161.1` FPTS (`+8.81%`) all 8 yrs | `+2,216.1` (`+9.06%`) Holdout | Holdout Top-150 `250/300` (Rank MAE `39.86`).
-* **Yahoo Scoring — `residual_wait`:** **`+2,467.1` FPTS (`+10.07%`)** all 8 yrs | **`+2,426.7` (`+9.93%`)** Holdout | Avg Rank `3.39` | Win % `36.6%` | Top-4 `72.3%` | Holdout Top-150 `250/300` (Rank MAE `38.41`).
-* **Live `2026–27` Zero-Leakage Check (241 games through `2026-11-21`):** Top-150 `r = +0.142` (positive in all 4 ADP bands; `9/9` seasons positive `2018–27`), H2H flips `190/343 (55.4%)`, `ADP 151–225` positive-edge sleeper hit rate `10/14 (71.4%)` vs. `14/63 (22.2%)`.
+* **Default Scoring — `residual_unified`:** `+1,693.0` FPTS (`+6.75%`) all 8 yrs | `+1,801.2` (`+7.14%`) Holdout | Avg Rank `4.32` | Win % `28.0%` | 0g Busts `0.03` (`0.00` HO).
+* **Default Scoring — `residual_wait`:** **`+1,966.5` FPTS (`+7.85%`)** all 8 yrs (`8/8` winning seasons) | **`+2,431.0` (`+9.66%`)** Holdout | Avg Rank `4.04` (`3.82` HO) | Win % `29.7%` (`36.8%` HO) | 0g Busts `0.02` (`0.00` HO).
+* **Yahoo Scoring — `residual_unified`:** `+2,134.0` FPTS (`+8.70%`) all 8 yrs | `+2,211.5` (`+9.04%`) Holdout | Holdout Top-150 `250/300` (Rank MAE `39.84`).
+* **Yahoo Scoring — `residual_wait`:** **`+2,467.3` FPTS (`+10.07%`)** all 8 yrs | **`+2,451.1` (`+10.03%`)** Holdout | Avg Rank `3.39` (`3.48` HO) | Win % `36.6%` | Top-4 `72.3%` | Holdout Top-150 `250/300` (Rank MAE `38.40`).
+* **Live `2026–27` Zero-Leakage Check (241 games through `2026-11-21`):** Top-150 `r = +0.145` (`9/9` seasons positive `2018–27`), `ADP 151–225` positive-edge sleeper hit rate `10/14 (71.4%)` vs. `14/63 (22.2%)`.
