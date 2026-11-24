@@ -61,15 +61,25 @@ $$\text{AdjFPPG} = \frac{\min(g, 65) \cdot \text{raw\_FPPG} + (65 - \min(g, 65))
 
 ## 4. Benchmark Summary (Do Not Regress Below These)
 
-All numbers from `draft_engine.py --backtest --seed 42` (6 CV + 2 Holdout = 8 seasons, 1,152 12-team ESPN drafts/strategy, R1 straight ADP, R2–13 $\text{Uniform}[-2, +2]$, exact daily active lineups, 4-C primary cap):
+All Points numbers from `draft_engine.py --backtest --trials-per-slot 60 --seed 42` (refreshed with `2014–15` box-score history present, 720 12-team ESPN drafts/season, R1 straight ADP, R2–13 $\text{Uniform}[-2, +2]$, exact daily active lineups, 4-C primary cap):
 
-* **Default Scoring — `residual_unified` (greedy, $\lambda = 0.50 \to 0.85$ late ramp):** $+1,693.0$ FPTS ($+6.75\%$) all 8 yrs | $+1,801.2$ ($+7.14\%$) holdout | Avg Rank $4.32$ ($4.36$ HO) | Win % $28.0\%$ ($29.2\%$ HO) | Top-4 % $59.6\%$ | 0g Busts $0.03$ vs. $0.21$ ($0.00$ HO).
-* **Default Scoring — `residual_wait` (wait, $\lambda = 0.85$):** **$+1,966.5$ FPTS ($+7.85\%$)** all 8 yrs (8/8 winning seasons) | **$+2,431.0$ ($+9.66\%$)** holdout | Avg Rank $4.04$ ($3.82$ HO) | Win % $29.7\%$ ($36.8\%$ HO) | Top-4 % $62.9\%$ ($65.6\%$ HO) | 0g Busts $0.02$ vs. $0.21$ ($0.00$ vs. $0.18$ HO).
-* **Yahoo Scoring — `residual_unified` (greedy, $\lambda = 0.50 \to 0.85$ late ramp):** $+2,134.0$ FPTS ($+8.70\%$) all 8 yrs | $+2,211.5$ ($+9.04\%$) holdout | Avg Rank $3.69$ | Win % $31.2\%$ | Top-4 % $68.8\%$ | 0g Busts $0.04$ vs. $0.21$ ($0.00$ HO) | Holdout Top-150 `250/300` (Rank MAE `39.84`).
-* **Yahoo Scoring — `residual_wait` (wait, $\lambda = 0.85$):** **$+2,467.3$ FPTS ($+10.07\%$)** all 8 yrs | **$+2,451.1$ ($+10.03\%$)** holdout | Avg Rank $3.39$ ($3.48$ HO) | Win % $36.6\%$ ($29.5\%$ HO) | Top-4 % $72.3\%$ ($70.1\%$ HO) | 0g Busts $0.04$ vs. $0.21$ ($0.00$ vs. $0.18$ HO).
-* **Live 2026–27 Zero-Leakage Check (through `2026-11-21`, ~19.6% of season):** Top-150 correlation $r(\text{pred\_edge}, \text{actual\_vs\_ADP}) = +0.145$ (**9/9 out-of-sample seasons** positive `2018-19` through `2026-27`); Stage-1 full-NBA Top-150 captured `110/150` (with injury guard, `16/32 = 50%` `ADP > 150` hit rate); Stage-2 `ADP 151–225` positive-edge sleepers hit `10/14 (71.4%)` Top-150 vs. `14/63 (22.2%)` for negative-edge.
-* **Interactive Replay Dashboard:** `build_board_page.py` generates bright, streamlined offline `board_2026_27.html` covering all 9 out-of-sample seasons (6 CV + 2 Holdout + Live `2026-27`) with a 4 games/sec real-time game-by-game replay slider and live SVG trajectory chart.
-* **Unit Tests:** `test_injury_cap.py` (6 tests) and `test_reach_or_wait.py` (4 tests) — all 10 passing via `.\.venv\Scripts\python.exe -m unittest -v test_injury_cap.py test_reach_or_wait.py`.
+* **Points — 9-Yr Stable (`2016–17+`, `5,760` drafts, ESPN Default):**
+  * `residual_unified` (greedy, $\lambda = 0.50 \to 0.85$ late ramp): `+1,454.8` FPTS (`+5.80%`) | Avg Rank `4.51` | Win % `20.7%` | Top-4 % `57.7%` | `8/8` winning seasons.
+  * `residual_wait` (wait, $\lambda = 0.85$): **`+1,608.6` FPTS (`+6.42%`)** | Holdout **`+1,970.7` (`+7.82%`, `30.6%` Win)** | Avg Rank `4.39` | Win % **`23.8%`** | Top-4 % `58.5%` | 0g Busts `0.02` vs. `0.21` (`0.00` HO) | `8/8` winning seasons.
+* **Points — 9-Yr Stable (`2016–17+`, `5,760` drafts, Yahoo Scoring):**
+  * `residual_unified` (greedy): `+1,929.0` FPTS (`+7.86%`) | Avg Rank `3.96` | Win % `29.0%` | Top-4 % `64.0%`.
+  * `residual_wait` (wait, $\lambda = 0.85$): **`+2,289.3` FPTS (`+9.34%`)** | Holdout **`+2,344.8` (`+9.59%`, `29.9%` Win)** | Avg Rank `3.60` | Win % **`35.1%`** | Top-4 % `68.5%` | `8/8` winning seasons.
+* **Points — 13-Yr Max Archive (`2008–09+`, `8,640` drafts, ESPN Default, `board_13yr_2014_2027.html`):**
+  * `residual_wait`: **`+1,595.3` FPTS (`+6.43%`)** | Avg Rank `4.40` | Win % **`25.3%`** | `11/12` winning draft years, `13/13` positive OOS `r` (`t = +9.53`).
+* **Unified 9-Cat Engine (`cat9_engine.py`, `2016–17+`, `--to-weight 0.75`, `2,880` drafts, `board_cat9_2026_27.html`):**
+  * Empirically validated `r = 0.94–0.96` between Roto and H2H across 400 leagues -> ONE unified projection model powers all 3 formats (with optional `--punt` client/CLI filter; balanced `residual_wait` beat blind Punt-TO and Dynamic Punt-1 in all 3 formats).
+  * `residual_wait` (`8/8` winning seasons across all 3 formats, Holdout `r = +0.287`, Live `2026–27` `r = +0.128`):
+    * **9-Cat Roto:** **`68.88 / 108`** (vs. `58.65` Market) | Avg Rank **`3.49`** | Win % **`28.9%`** | Top-4 % `69.5%`.
+    * **9-Cat H2H Each-Cat:** **`56.33%`** | Avg Rank **`3.32`** | Win % **`30.2%`**.
+    * **9-Cat H2H Most-Cat:** **`62.29%`** | Avg Rank **`3.60`** | Win % **`27.7%`**.
+  * **Skeptic Stress Tests:** Survives `±6` human noise (`25–29%` Win), 65g waiver fill (`29.7%` Roto Win), and dropping platform features (`23–24%` Win); narrows to **`4.4–4.9` Avg Rank (`13.5–18.8%` Win)** in realistic `±6` Yahoo-only 9-Cat rooms.
+* **Interactive Replay Dashboards:** `build_board_page.py` (`board_2026_27.html`, `board_13yr_2014_2027.html`) and `build_cat9_board_page.py` (`board_cat9_2026_27.html` with interactive live Punt chips).
+* **Unit Tests:** `test_injury_cap.py` (6), `test_reach_or_wait.py` (4), `test_cat9_engine.py` (5) — all 15 passing via `.\.venv\Scripts\python.exe -m unittest discover -p "test_*.py" -v`.
 
 ### Rejected / Completed Research Signals (Do Not Repeat)
 * **Local Advanced Impact Stats (`BPM`, `VORP`, `On-Off`, `USG%`) in Stage 2:** ADP already prices impact; flat on Holdout (kept strictly opt-in via `--advanced-stats`). `rel_ts` and `stocks36` carry strong Center bias and hurt drafts.
