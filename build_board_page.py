@@ -1447,9 +1447,10 @@ function renderSeasonBar() {
   `).join("");
 
   let simHtml = "";
-  if (S.sim_wait) {
-    const nDr = S.sim_wait.drafts || 720;
-    simHtml = `Sim (${nDr} drafts): <strong>${fmtSignedInt(S.sim_wait.diff)} FPTS</strong> &middot; ${S.sim_wait.win_pct.toFixed(1)}% Win`;
+  const simG = S.sim_greedy;
+  if (simG) {
+    const nDr = simG.drafts || 720;
+    simHtml = `Greedy Sim (${nDr} drafts): <strong>${fmtSignedInt(simG.diff)} FPTS</strong> &middot; ${simG.win_pct.toFixed(1)}% Win`;
   } else {
     simHtml = `Live season &middot; ${S.max_step} team-games`;
   }
@@ -1823,7 +1824,7 @@ document.querySelectorAll("thead th").forEach(th => {
 });
 
 (() => {
-  const simRows = APP.season_order.map(o => APP.seasons[o.season]?.sim_wait).filter(Boolean);
+  const simRows = APP.season_order.map(o => APP.seasons[o.season]?.sim_greedy).filter(Boolean);
   const el = document.getElementById("footer-sim-summary");
   if (el && simRows.length) {
     const nYrs = simRows.length;
@@ -1832,7 +1833,7 @@ document.querySelectorAll("thead th").forEach(th => {
     const avgDiff = simRows.reduce((a, r) => a + r.diff, 0) / nYrs;
     const avgWin = simRows.reduce((a, r) => a + r.win_pct, 0) / nYrs;
     const wins = simRows.filter(r => r.diff > 0).length;
-    el.textContent = `${nYrs}-Yr Backtest (${totalDrafts.toLocaleString()} drafts, ${perYr}/yr): ${avgDiff >= 0 ? "+" : ""}${avgDiff.toFixed(1)} FPTS avg | ${avgWin.toFixed(1)}% Win | ${wins}/${nYrs} winning yrs (Reach-vs-Wait)`;
+    el.textContent = `${nYrs}-Yr Backtest (${totalDrafts.toLocaleString()} drafts, ${perYr}/yr): ${avgDiff >= 0 ? "+" : ""}${avgDiff.toFixed(1)} FPTS avg | ${avgWin.toFixed(1)}% Win | ${wins}/${nYrs} winning yrs (Greedy — Pure Board)`;
   }
 })();
 

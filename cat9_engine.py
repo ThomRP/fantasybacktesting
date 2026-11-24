@@ -165,9 +165,6 @@ ROOKIE_CAT9_FEATURES = (
 CAT9_STRATEGIES = (
     "market",
     "residual_unified",
-    "residual_wait",
-    "residual_punt_to",
-    "residual_punt1_h2h",
 )
 
 
@@ -1118,7 +1115,7 @@ def run_cat9_backtest_sim(
                     records_split[(split, strat)].append(rec)
                     records_split[("all", strat)].append(rec)
                     records_season[(s, split, strat)].append(rec)
-                    if s == sample_season and slot == sample_slot and trial == sample_trial and strat == "residual_wait":
+                    if s == sample_season and slot == sample_slot and trial == sample_trial and strat == "residual_unified":
                         sample_info = (s, slot + 1, b, hero_orders[strat], hero_picks, rosters[slot], rec)
 
     def _agg(recs, meta):
@@ -1176,19 +1173,19 @@ def run_cat9_backtest_sim(
                     f"{r['h2hm_pct']:5.2f}% {r['h2hm_rk']:4.2f} {r['h2hm_win_pct']:4.1f}% | {r['hero_0g']:4.2f}/{r['field_0g']:4.2f}"
                 )
 
-        if "residual_wait" in strategies and "market" in strategies:
-            print("\n=== Season-by-Season 9-Cat Performance (Market vs. Residual+Wait) ===")
-            print(f"  {'Season':7s} {'Split':7s} | {'Mkt Roto':>8s} | {'Wait Roto':>9s} {'Rk':>4s} {'Win%':>5s} | {'H2H-E Rk':>8s} {'Win%':>5s} | {'H2H-M Rk':>8s} {'Win%':>5s} | {'0g(H/F)':>9s}")
+        if "residual_unified" in strategies and "market" in strategies:
+            print("\n=== Season-by-Season 9-Cat Performance (Market vs. Residual Greedy — Pure Board) ===")
+            print(f"  {'Season':7s} {'Split':7s} | {'Mkt Roto':>8s} | {'Grdy Roto':>9s} {'Rk':>4s} {'Win%':>5s} | {'H2H-E Rk':>8s} {'Win%':>5s} | {'H2H-M Rk':>8s} {'Win%':>5s} | {'0g(H/F)':>9s}")
             print("  " + "-" * 103)
             by_sm = {(r["season"], r["strategy"]): r for r in sim_seasons}
             for s in seasons:
                 m = by_sm[(s, "market")]
-                rw = by_sm[(s, "residual_wait")]
+                ru = by_sm[(s, "residual_unified")]
                 print(
-                    f"  {s:7s} {rw['split']:7s} | {m['roto_pts']:8.2f} | "
-                    f"{rw['roto_pts']:9.2f} {rw['roto_rk']:4.2f} {rw['roto_win_pct']:4.1f}% | "
-                    f"{rw['h2he_rk']:8.2f} {rw['h2he_win_pct']:4.1f}% | "
-                    f"{rw['h2hm_rk']:8.2f} {rw['h2hm_win_pct']:4.1f}% | {rw['hero_0g']:4.2f}/{rw['field_0g']:4.2f}"
+                    f"  {s:7s} {ru['split']:7s} | {m['roto_pts']:8.2f} | "
+                    f"{ru['roto_pts']:9.2f} {ru['roto_rk']:4.2f} {ru['roto_win_pct']:4.1f}% | "
+                    f"{ru['h2he_rk']:8.2f} {ru['h2he_win_pct']:4.1f}% | "
+                    f"{ru['h2hm_rk']:8.2f} {ru['h2hm_win_pct']:4.1f}% | {ru['hero_0g']:4.2f}/{ru['field_0g']:4.2f}"
                 )
 
         if sample_info:
@@ -1197,7 +1194,7 @@ def run_cat9_backtest_sim(
             rank_of = {idx: r for r, idx in enumerate(hero_order, start=1)}
             slot_of = de.assign_lineup_slots(roster, b["masks10"], b["prio"])
             tag_map = {"returning_vet": "VET", "rookie": "ROOK", "returning_absence": "RET"}
-            print(f"\n=== Sample {s} 9-Cat Roster — Hero (residual_wait) at Random Slot #{slot_num}/{n_teams} ===")
+            print(f"\n=== Sample {s} 9-Cat Roster — Hero (residual_unified, Pure Greedy) at Random Slot #{slot_num}/{n_teams} ===")
             print(
                 f"  Roto: {rec['roto_pts']:.1f}/108 (#{rec['roto_rk']:.1f}) | "
                 f"H2H-Each: {rec['h2he_pct']:.1f}% (#{rec['h2he_rk']:.1f}) | "
@@ -1372,7 +1369,7 @@ def run_cat9_backtest(
             by_s[r["draft_season"]].append(r)
         s_list = sorted(by_s)
         print(f"\n=== GLOBAL Top-150 9-Cat Board — {split_label.upper()} ({len(s_list)} seasons, TO weight={to_weight:.2f}) ===")
-        for strat in ("market", "residual_unified", "residual_wait"):
+        for strat in ("market", "residual_unified"):
             items, added, dropped, corrs = [], [], [], []
             for s in s_list:
                 grp = by_s[s]
@@ -1431,7 +1428,7 @@ def run_cat9_backtest(
             scored_seasons, development, holdout, cat9_pools, cat9_by_year, w9, eff_min_s,
             lam=lam, wait_lam=wait_lam, recency_halflife=recency_halflife, drop_platform_feats=True,
         )
-        st_strats = ("market", "residual_unified", "residual_wait")
+        st_strats = ("market", "residual_unified")
         scenarios = [
             ("1. Baseline (Opps=FP AVG, var=+-2)", sim_bundles, dict(adp_var=2.0, opp_use_yahoo_adp=False, waiver_fill_roto=False)),
             ("2. Opps=Yahoo's OWN ADP (hardest 9-Cat room)", sim_bundles, dict(adp_var=2.0, opp_use_yahoo_adp=True, waiver_fill_roto=False)),
@@ -1440,14 +1437,14 @@ def run_cat9_backtest(
             ("5. Drop Platform Feats (no espn_vs_avg/std)", noplat_bundles, dict(adp_var=2.0, opp_use_yahoo_adp=False, waiver_fill_roto=False)),
             ("6. Yahoo ADP + Human +-6 + No Platform Feats", noplat_bundles, dict(adp_var=6.0, opp_use_yahoo_adp=True, waiver_fill_roto=False)),
         ]
-        print(f"  {'Scenario':48s} | {'Wait Roto Rk (Win%)':>19s} | {'Wait H2H-E Rk (Win%)':>20s} | {'Wait H2H-M Rk (Win%)':>20s}")
+        print(f"  {'Scenario':48s} | {'Grdy Roto Rk (Win%)':>19s} | {'Grdy H2H-E Rk (Win%)':>20s} | {'Grdy H2H-M Rk (Win%)':>20s}")
         print("  " + "-" * 116)
         for label, b_use, kw in scenarios:
             s_sum, _ = run_cat9_backtest_sim(b_use, strategies=st_strats, trials_per_slot=10, seed=seed, quiet=True, **kw)
-            rw = next(r for r in s_sum if r["split"] == "all" and r["strategy"] == "residual_wait")
+            ru = next(r for r in s_sum if r["split"] == "all" and r["strategy"] == "residual_unified")
             print(
-                f"  {label:48s} | {rw['roto_rk']:5.2f} ({rw['roto_win_pct']:5.1f}%)      | "
-                f"{rw['h2he_rk']:5.2f} ({rw['h2he_win_pct']:5.1f}%)       | {rw['h2hm_rk']:5.2f} ({rw['h2hm_win_pct']:5.1f}%)"
+                f"  {label:48s} | {ru['roto_rk']:5.2f} ({ru['roto_win_pct']:5.1f}%)      | "
+                f"{ru['h2he_rk']:5.2f} ({ru['h2he_win_pct']:5.1f}%)       | {ru['h2hm_rk']:5.2f} ({ru['h2hm_win_pct']:5.1f}%)"
             )
 
     print(f"\nSaved 9-Cat backtest reports under {data}/cat9_engine_*_{tag}.csv")

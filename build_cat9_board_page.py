@@ -582,8 +582,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="intro-step-body">Across 400 real 12-team leagues (2018&ndash;26), Roto and H2H team standings correlate at <strong>r = 0.94&ndash;0.96</strong>. One strict zero-leakage 9-Cat model (<strong>PTS, REB, AST, STL, BLK, 3PM, volume-weighted FG%/FT%, and 0.75&times; TO</strong>) wins <strong>8/8 seasons</strong> in all three formats.</div>
       </div>
       <div>
-        <div class="intro-step-title">2. Balanced Value Beats Blind Punting</div>
-        <div class="intro-step-body">In our 2,880-draft backtest, drafting maximum unified 9-Cat value (<strong>~29% Win Rate</strong>) crushed blind Punt-TO and Dynamic Punt-1 even in H2H Most-Categories. Use the <strong>Interactive Punt Chips</strong> below only when your live draft forces a specific build (e.g., drafting Giannis &rarr; click <strong>FT%</strong>).</div>
+        <div class="intro-step-title">2. Balanced Baseline &amp; Pure Greedy Backtesting</div>
+        <div class="intro-step-body">Every standard 9-Cat ranking starts from a <strong>balanced 9-Cat baseline</strong> (measuring universal player value across the league). Simulations strictly draft <strong>greedily</strong>&mdash;always taking the highest-ranked available player with zero waiting tricks, trades, or mid-season streaming&mdash;to isolate pure projection quality. If your live draft calls for punting (e.g., drafting Giannis &rarr; click <strong>FT%</strong>), use the Punt chips as a reference lens alongside ADP without overreaching early.</div>
       </div>
       <div>
         <div class="intro-step-title">3. Reading the Z-Scores</div>
@@ -824,8 +824,9 @@ function selectSeason(seasonKey) {
   document.getElementById("slider-max-lbl").textContent = `G${S.max_step}`;
 
   const simNote = document.getElementById("season-sim-note");
-  if (S.sim_wait) {
-    simNote.innerHTML = `Sim (${S.sim_wait.drafts} dr): <strong>${S.sim_wait.roto_pts.toFixed(1)}</strong> Roto (${S.sim_wait.roto_win.toFixed(1)}% Win) &middot; H2H-M <strong>${S.sim_wait.h2hm_win.toFixed(1)}%</strong> Win`;
+  const simG = S.sim_greedy;
+  if (simG) {
+    simNote.innerHTML = `Greedy Sim (${simG.drafts} dr): <strong>${simG.roto_pts.toFixed(1)}</strong> Roto (${simG.roto_win.toFixed(1)}% Win) &middot; H2H-M <strong>${simG.h2hm_win.toFixed(1)}%</strong> Win`;
   } else {
     simNote.innerHTML = `Live Out-of-Sample Season (Zero Leakage)`;
   }
@@ -902,16 +903,22 @@ function renderKPIs() {
 
   const k4 = document.getElementById("kpi-sim");
   const k4s = document.getElementById("kpi-sim-sub");
-  if (S.sim_wait) {
-    document.getElementById("kpi-sim-lbl").textContent = `3-Format Sim (${S.sim_wait.drafts} drafts)`;
-    k4.innerHTML = `${S.sim_wait.roto_win.toFixed(1)}% / ${S.sim_wait.h2he_win.toFixed(1)}% / ${S.sim_wait.h2hm_win.toFixed(1)}%`;
+  const simG = S.sim_greedy;
+  if (simG) {
+    document.getElementById("kpi-sim-lbl").textContent = `Greedy 3-Format Sim (${simG.drafts} dr)`;
+    k4.innerHTML = `${simG.roto_win.toFixed(1)}% / ${simG.h2he_win.toFixed(1)}% / ${simG.h2hm_win.toFixed(1)}%`;
     k4.className = "stat-val pos";
-    k4s.innerHTML = `Win%: <strong>Roto</strong> / <strong>H2H-E</strong> / <strong>H2H-M</strong> (Avg Rk ${S.sim_wait.roto_rk.toFixed(2)})`;
+    k4s.innerHTML = `Win%: <strong>Roto</strong> / <strong>H2H-E</strong> / <strong>H2H-M</strong> (Avg Rk ${simG.roto_rk.toFixed(2)})`;
   } else {
-    document.getElementById("kpi-sim-lbl").textContent = "3-Format Sim (Live)";
+    const allSims = APP.season_order.map(o => APP.seasons[o.season]?.sim_greedy).filter(Boolean);
+    const nS = allSims.length || 1;
+    const aR = allSims.reduce((a, r) => a + r.roto_win, 0) / nS;
+    const aE = allSims.reduce((a, r) => a + r.h2he_win, 0) / nS;
+    const aM = allSims.reduce((a, r) => a + r.h2hm_win, 0) / nS;
+    document.getElementById("kpi-sim-lbl").textContent = "Greedy 3-Format Sim (Live)";
     k4.innerHTML = "In Progress";
     k4.className = "stat-val muted";
-    k4s.innerHTML = `8-Yr Avg: <strong>28.9%</strong> Roto &middot; <strong>30.2%</strong> H2H-E &middot; <strong>27.7%</strong> H2H-M`;
+    k4s.innerHTML = `${nS}-Yr Avg: <strong>${aR.toFixed(1)}%</strong> Roto &middot; <strong>${aE.toFixed(1)}%</strong> H2H-E &middot; <strong>${aM.toFixed(1)}%</strong> H2H-M`;
   }
 }
 
@@ -1130,9 +1137,9 @@ document.querySelectorAll("[data-filter]").forEach(btn => {
 });
 document.getElementById("search").oninput = e => { state.search = e.target.value; renderTable(); };
 
-// Dynamic footer summary from embedded sim rows
+// Dynamic footer summary from embedded sim rows (Pure Greedy)
 (() => {
-  const simRows = APP.season_order.map(o => APP.seasons[o.season]?.sim_wait).filter(Boolean);
+  const simRows = APP.season_order.map(o => APP.seasons[o.season]?.sim_greedy).filter(Boolean);
   const el = document.getElementById("footer-sim-summary");
   if (el && simRows.length) {
     const n = simRows.length;
@@ -1140,7 +1147,7 @@ document.getElementById("search").oninput = e => { state.search = e.target.value
     const rW = simRows.reduce((a, r) => a + r.roto_win, 0) / n;
     const eW = simRows.reduce((a, r) => a + r.h2he_win, 0) / n;
     const mW = simRows.reduce((a, r) => a + r.h2hm_win, 0) / n;
-    el.textContent = `${n}-Yr 9-Cat Backtest (${dr.toLocaleString()} drafts): ${rW.toFixed(1)}% Roto | ${eW.toFixed(1)}% H2H-E | ${mW.toFixed(1)}% H2H-M Win (Reach-vs-Wait)`;
+    el.textContent = `${n}-Yr 9-Cat Backtest (${dr.toLocaleString()} drafts): ${rW.toFixed(1)}% Roto | ${eW.toFixed(1)}% H2H-E | ${mW.toFixed(1)}% H2H-M Win (Greedy — Pure Board)`;
   }
 })();
 

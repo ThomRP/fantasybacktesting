@@ -61,24 +61,22 @@ $$\text{AdjFPPG} = \frac{\min(g, 65) \cdot \text{raw\_FPPG} + (65 - \min(g, 65))
 
 ## 4. Benchmark Summary (Do Not Regress Below These)
 
-All Points numbers from `draft_engine.py --backtest --trials-per-slot 60 --seed 42` (refreshed with `2014–15` box-score history present, 720 12-team ESPN drafts/season, R1 straight ADP, R2–13 $\text{Uniform}[-2, +2]$, exact daily active lineups, 4-C primary cap):
+All primary benchmarks use **pure Greedy drafting (`residual_unified`, blindly picking the highest-ranked available legal player—no draft-strategy tricks)** at **`720` drafts/season (`seed=42`)**, 12-team × 13-round snake, R1 straight ADP, R2–13 $\text{Uniform}[-2, +2]$, exact daily `10-starter + 3-bench` active lineups, 4-C primary cap (Reach-vs.-Wait kept as optional reference):
 
-* **Points — 9-Yr Stable (`2016–17+`, `5,760` drafts, ESPN Default):**
-  * `residual_unified` (greedy, $\lambda = 0.50 \to 0.85$ late ramp): `+1,454.8` FPTS (`+5.80%`) | Avg Rank `4.51` | Win % `20.7%` | Top-4 % `57.7%` | `8/8` winning seasons.
-  * `residual_wait` (wait, $\lambda = 0.85$): **`+1,608.6` FPTS (`+6.42%`)** | Holdout **`+1,970.7` (`+7.82%`, `30.6%` Win)** | Avg Rank `4.39` | Win % **`23.8%`** | Top-4 % `58.5%` | 0g Busts `0.02` vs. `0.21` (`0.00` HO) | `8/8` winning seasons.
+* **Points — 9-Yr Stable (`2016–17+`, `5,760` drafts, ESPN Default, `board_2026_27.html`):**
+  * **Primary Greedy (`residual_unified`):** **`+1,454.8` FPTS (`+5.80%`)** | Holdout **`+1,535.2` (`22.2%` Win)** | Avg Rank `4.51` | Win % **`20.7%`** | Top-4 % `57.7%` | 0g Busts `0.03` vs. `0.21` (`0.00` HO) | **`8/8` winning seasons**. *(Optional Wait: `+1,608.6`, `23.8%` Win.)*
 * **Points — 9-Yr Stable (`2016–17+`, `5,760` drafts, Yahoo Scoring):**
-  * `residual_unified` (greedy): `+1,929.0` FPTS (`+7.86%`) | Avg Rank `3.96` | Win % `29.0%` | Top-4 % `64.0%`.
-  * `residual_wait` (wait, $\lambda = 0.85$): **`+2,289.3` FPTS (`+9.34%`)** | Holdout **`+2,344.8` (`+9.59%`, `29.9%` Win)** | Avg Rank `3.60` | Win % **`35.1%`** | Top-4 % `68.5%` | `8/8` winning seasons.
+  * **Primary Greedy (`residual_unified`):** **`+1,929.0` FPTS (`+7.86%`)** | Holdout **`+1,967.1` (`23.8%` Win)** | Avg Rank `3.96` | Win % **`29.0%`** | Top-4 % `64.0%` | **`8/8` winning seasons**. *(Optional Wait: `+2,289.3`, `35.1%` Win.)*
 * **Points — 13-Yr Max Archive (`2008–09+`, `8,640` drafts, ESPN Default, `board_13yr_2014_2027.html`):**
-  * `residual_wait`: **`+1,595.3` FPTS (`+6.43%`)** | Avg Rank `4.40` | Win % **`25.3%`** | `11/12` winning draft years, `13/13` positive OOS `r` (`t = +9.53`).
-* **Unified 9-Cat Engine (`cat9_engine.py`, `2016–17+`, `--to-weight 0.75`, `2,880` drafts, `board_cat9_2026_27.html`):**
-  * Empirically validated `r = 0.94–0.96` between Roto and H2H across 400 leagues -> ONE unified projection model powers all 3 formats (with optional `--punt` client/CLI filter; balanced `residual_wait` beat blind Punt-TO and Dynamic Punt-1 in all 3 formats).
-  * `residual_wait` (`8/8` winning seasons across all 3 formats, Holdout `r = +0.287`, Live `2026–27` `r = +0.128`):
-    * **9-Cat Roto:** **`68.88 / 108`** (vs. `58.65` Market) | Avg Rank **`3.49`** | Win % **`28.9%`** | Top-4 % `69.5%`.
-    * **9-Cat H2H Each-Cat:** **`56.33%`** | Avg Rank **`3.32`** | Win % **`30.2%`**.
-    * **9-Cat H2H Most-Cat:** **`62.29%`** | Avg Rank **`3.60`** | Win % **`27.7%`**.
-  * **Skeptic Stress Tests:** Survives `±6` human noise (`25–29%` Win), 65g waiver fill (`29.7%` Roto Win), and dropping platform features (`23–24%` Win); narrows to **`4.4–4.9` Avg Rank (`13.5–18.8%` Win)** in realistic `±6` Yahoo-only 9-Cat rooms.
-* **Interactive Replay Dashboards:** `build_board_page.py` (`board_2026_27.html`, `board_13yr_2014_2027.html`) and `build_cat9_board_page.py` (`board_cat9_2026_27.html` with interactive live Punt chips).
+  * **Primary Greedy (`residual_unified`):** **`+1,446.1` FPTS (`+5.83%`)** | Avg Rank `4.55` | Win % **`22.3%`** | `11/12` winning draft years, `13/13` positive OOS `r` (`t = +9.53`).
+* **Unified 9-Cat Engine (`cat9_engine.py`, `2016–17+`, `--to-weight 0.75`, `5,760` drafts, `board_cat9_2026_27.html`):**
+  * Empirically validated `r = 0.94–0.96` between Roto and H2H across 400 leagues -> ONE unified balanced 9-Cat projection model powers all 3 formats (with optional `--punt` reference chips in CLI/UI).
+  * **Primary Greedy (`residual_unified`, `8/8` winning seasons across all 3 formats, Holdout `r = +0.287`, Live `2026–27` `r = +0.128`):**
+    * **9-Cat Roto:** **`68.79 / 108`** (vs. `58.70` Market) | Avg Rank **`3.52`** | Win % **`29.6%`** | Top-4 % `70.0%`.
+    * **9-Cat H2H Each-Cat:** **`55.99%`** | Avg Rank **`3.44`** | Win % **`29.5%`**.
+    * **9-Cat H2H Most-Cat:** **`61.44%`** | Avg Rank **`3.73`** | Win % **`25.5%`**.
+  * **Skeptic Stress Tests (Pure Greedy):** Survives `±6` human noise (`24.6–29.1%` Win), 65g waiver fill (`30.6%` Roto Win), and dropping platform features (`27.7–30.7%` Win); narrows to **`4.53–4.86` Avg Rank (`12.0–19.9%` Win)** in realistic `±6` Yahoo-only 9-Cat rooms.
+* **Interactive Replay Dashboards:** `build_board_page.py` (`board_2026_27.html`, `board_13yr_2014_2027.html`) and `build_cat9_board_page.py` (`board_cat9_2026_27.html` with interactive live Punt reference chips)—all displaying pure Greedy simulation benchmarks.
 * **Unit Tests:** `test_injury_cap.py` (6), `test_reach_or_wait.py` (4), `test_cat9_engine.py` (5) — all 15 passing via `.\.venv\Scripts\python.exe -m unittest discover -p "test_*.py" -v`.
 
 ### Rejected / Completed Research Signals (Do Not Repeat)
