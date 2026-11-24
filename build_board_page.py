@@ -396,7 +396,7 @@ def build_live_2026_27_s2_cands(data, prior_s, prev2_s, births_prior, target_pro
     return s2_cands
 
 
-def build_all_seasons_payload(data: Path, scoring_name: str = "default", min_train_season: str = "2016-17", cv_folds: int = 6, recency_halflife=None):
+def build_all_seasons_payload(data: Path, scoring_name: str = "default", min_train_season: str = "2016-17", cv_folds: int = 6, recency_halflife=None, sim_csv_override=None):
     _, scoring = de.resolve_scoring(scoring_name)
     seasons_dirs, season_data, births_cache, profiles_cache = de.load_all_completed_seasons(data, scoring)
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, played_before_all, _ = de.build_all_training_datasets(
@@ -406,7 +406,7 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default", min_tra
 
     # Load historical 12-team sim summary by season (if available) to display in season header
     sim_by_season = {}
-    sim_csv = data / f"draft_engine_sim_by_season_{scoring_name}.csv"
+    sim_csv = Path(sim_csv_override) if sim_csv_override else (data / f"draft_engine_sim_by_season_{scoring_name}.csv")
     if sim_csv.is_file():
         for row in de.read_csv(sim_csv):
             if row.get("strategy") in ("residual_unified", "residual_wait"):
@@ -415,6 +415,7 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default", min_tra
                     "rank": float(row["avg_rank"]),
                     "win_pct": float(row["win_pct"]),
                     "top4_pct": float(row["top4_pct"]),
+                    "drafts": int(row["drafts"]) if row.get("drafts") else 720,
                 }
 
     eff_min_s = None if (not min_train_season or str(min_train_season).lower() == "all") else str(min_train_season)
@@ -1288,7 +1289,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <footer>
     <span>Strict out-of-sample pre-season projections (ESPN default scoring)</span>
-    <span>8-Yr Backtest (5,760 drafts, 720/yr): +1,920.7 FPTS Default / +2,477.6 FPTS Yahoo (Reach-vs-Wait)</span>
+    <span id="footer-sim-summary"></span>
   </footer>
 </div>
 
@@ -1447,7 +1448,8 @@ function renderSeasonBar() {
 
   let simHtml = "";
   if (S.sim_wait) {
-    simHtml = `Sim (720 drafts): <strong>${fmtSignedInt(S.sim_wait.diff)} FPTS</strong> &middot; ${S.sim_wait.win_pct.toFixed(1)}% Win`;
+    const nDr = S.sim_wait.drafts || 720;
+    simHtml = `Sim (${nDr} drafts): <strong>${fmtSignedInt(S.sim_wait.diff)} FPTS</strong> &middot; ${S.sim_wait.win_pct.toFixed(1)}% Win`;
   } else {
     simHtml = `Live season &middot; ${S.max_step} team-games`;
   }
@@ -1566,10 +1568,10 @@ function renderAll() {
 
   const cards = [
     {
-      label: "Model vs. ADP (Top 150)",
+      label: "Top-150 Cutoff Swaps",
       val: `${fmtSignedInt(s2_150_diff)} FPTS`,
       cls: s2_150_diff >= 0 ? "pos" : "neg",
-      sub: `<strong>${s2Cap}/150</strong> hits (Mkt ${mktCap}) &middot; ${s2_swaps} swaps`,
+      sub: `<span title="Measures only the ~10-15 borderline swaps across the #150 cut line (the ~138 shared players inside Top 150 cancel out). See Top 15 Calls, Correlation, and Sim for full Rounds 1-13 performance."><strong>${s2Cap}/150</strong> hits (Mkt ${mktCap}) &middot; ${s2_swaps} cut-line swaps</span>`,
     },
     {
       label: "Top 15 Targets vs. Fades",
@@ -1820,6 +1822,20 @@ document.querySelectorAll("thead th").forEach(th => {
   });
 });
 
+(() => {
+  const simRows = APP.season_order.map(o => APP.seasons[o.season]?.sim_wait).filter(Boolean);
+  const el = document.getElementById("footer-sim-summary");
+  if (el && simRows.length) {
+    const nYrs = simRows.length;
+    const totalDrafts = simRows.reduce((a, r) => a + (r.drafts || 720), 0);
+    const perYr = Math.round(totalDrafts / nYrs);
+    const avgDiff = simRows.reduce((a, r) => a + r.diff, 0) / nYrs;
+    const avgWin = simRows.reduce((a, r) => a + r.win_pct, 0) / nYrs;
+    const wins = simRows.filter(r => r.diff > 0).length;
+    el.textContent = `${nYrs}-Yr Backtest (${totalDrafts.toLocaleString()} drafts, ${perYr}/yr): ${avgDiff >= 0 ? "+" : ""}${avgDiff.toFixed(1)} FPTS avg | ${avgWin.toFixed(1)}% Win | ${wins}/${nYrs} winning yrs (Reach-vs-Wait)`;
+  }
+})();
+
 selectSeason(APP.default_season);
 </script>
 </body>
@@ -1834,6 +1850,7 @@ def main():
     parser.add_argument("--min-train-season", default="2016-17", help="earliest training season (default: 2016-17; use 2014-15 or 2008-09 for expanded archive)")
     parser.add_argument("--cv-folds", type=int, default=6, help="number of CV seasons to include (default: 6; use 10 with --min-train-season 2008-09 for all 13 seasons 2014-15..2026-27)")
     parser.add_argument("--recency-halflife", type=float, default=None, help="optional exponential recency half-life in seasons")
+    parser.add_argument("--sim-csv", type=Path, default=None, help="optional sim_by_season CSV override matching this training window")
     parser.add_argument("--out", type=Path, default=Path("board_2026_27.html"), help="output HTML file path")
     args = parser.parse_args()
 
@@ -1844,6 +1861,7 @@ def main():
         min_train_season=args.min_train_season,
         cv_folds=args.cv_folds,
         recency_halflife=args.recency_halflife,
+        sim_csv_override=args.sim_csv,
     )
     json_blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     html = HTML_TEMPLATE.replace("__PAYLOAD_JSON__", json_blob)

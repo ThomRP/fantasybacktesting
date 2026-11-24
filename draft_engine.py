@@ -2273,7 +2273,7 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, wait_lam=DEFAULT_WAI
     return sim_summary, sim_seasons
 
 
-def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None, use_advanced_stats=False, min_train_season="2016-17", recency_halflife=None):
+def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None, use_advanced_stats=False, min_train_season="2016-17", recency_halflife=None, report_suffix=""):
     seasons_dirs, season_data, births_cache, profiles_cache = load_all_completed_seasons(data, scoring)
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, _, _ = build_all_training_datasets(
         data, seasons_dirs, season_data, births_cache, profiles_cache, max_pool_adp=max_pool_adp,
@@ -2430,16 +2430,17 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LA
                 "rookies_on_board": rk_n, "zero_game_busts": z0,
             })
 
-    write_csv(data / f"draft_engine_board_summary_{scoring_name}.csv", board_summary)
+    tag = f"{scoring_name}_{report_suffix}" if report_suffix else scoring_name
+    write_csv(data / f"draft_engine_board_summary_{tag}.csv", board_summary)
 
     if not skip_sim and sim_bundles:
         sim_summary, sim_seasons = run_espn_backtest_sim(
             sim_bundles, lam=lam, wait_lam=wait_lam, trials_per_slot=trials_per_slot, adp_var=adp_var, seed=seed,
         )
-        write_csv(data / f"draft_engine_sim_summary_{scoring_name}.csv", sim_summary)
-        write_csv(data / f"draft_engine_sim_by_season_{scoring_name}.csv", sim_seasons)
+        write_csv(data / f"draft_engine_sim_summary_{tag}.csv", sim_summary)
+        write_csv(data / f"draft_engine_sim_by_season_{tag}.csv", sim_seasons)
 
-    print(f"\nSaved backtest reports under {data}/draft_engine_*_{scoring_name}.csv")
+    print(f"\nSaved backtest reports under {data}/draft_engine_*_{tag}.csv")
 
 
 # ==============================================================================
@@ -2891,6 +2892,7 @@ def main():
     parser.add_argument("--advanced-stats", action="store_true", help="opt-in: enable local BPM/VORP/On-Off/USG%% extension")
     parser.add_argument("--min-train-season", default="2016-17", help="earliest draft season to include in training (default: 2016-17; use 2014-15 or 2008-09/all for expanded history)")
     parser.add_argument("--recency-halflife", type=float, default=None, help="opt-in: exponential recency half-life in seasons (e.g. 6.0); default None = equal weights")
+    parser.add_argument("--report-suffix", default="", help="optional suffix appended to saved backtest CSV filenames (e.g. 13yr)")
     parser.add_argument("--seed", type=int, default=None, help="random seed for simulator")
     args = parser.parse_args()
 
@@ -2937,6 +2939,7 @@ def main():
                 use_advanced_stats=use_adv,
                 min_train_season=args.min_train_season,
                 recency_halflife=args.recency_halflife,
+                report_suffix=args.report_suffix,
             )
     except (OSError, ValueError, KeyError, csv.Error) as error:
         parser.exit(1, f"Draft engine failed: {error}\n")
