@@ -611,7 +611,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fantasy Basketball Draft Board &amp; Edge Replay</title>
+<title>ADP-Based Pre-Draft Projections (Points)</title>
 <style>
   :root {
     --bg: #f4f7fb;
@@ -686,6 +686,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .split-badge.live { background: var(--pos-bg); border-color: var(--pos-bd); color: var(--pos); }
   .split-badge.holdout { background: var(--amber-bg); border-color: var(--amber-bd); color: var(--amber); }
   .split-badge.cv { background: var(--accent-bg); border-color: var(--accent-bd); color: var(--accent); }
+  .fmt-pill { font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; padding: 3px 10px; border-radius: 999px; background: #0f172a; color: #ffffff; }
   .header-meta {
     font-size: 13px;
     color: var(--muted);
@@ -1138,8 +1139,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .intro-toggle:hover { color: var(--accent); border-color: var(--accent-bd); }
   .intro-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    gap: 14px 20px;
     margin-top: 10px;
     padding-top: 10px;
     border-top: 1px solid var(--border);
@@ -1157,6 +1158,99 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     line-height: 1.45;
   }
 
+  /* Prominent Simulated Win-Rate Banner */
+  .sim-hero {
+    background: linear-gradient(135deg, #ffffff 0%, #f0fdf4 100%);
+    border: 1px solid var(--pos-bd);
+    border-left: 4px solid var(--pos);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow);
+    display: grid;
+    grid-template-columns: 1.25fr 1fr 1.25fr;
+    gap: 16px;
+    align-items: center;
+  }
+  @media (max-width: 860px) { .sim-hero { grid-template-columns: 1fr; } }
+  .sim-hero-lbl {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .sim-hero-big {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    flex-wrap: wrap;
+  }
+  .sim-hero-num {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--pos);
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+  }
+  .sim-hero-mult {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--pos);
+    background: var(--pos-bg);
+    border: 1px solid var(--pos-bd);
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .sim-hero-sub {
+    font-size: 12px;
+    color: var(--ink-2);
+    margin-top: 5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sim-bars { margin-top: 7px; display: flex; flex-direction: column; gap: 4px; }
+  .sim-bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sim-bar-lbl { min-width: 72px; font-weight: 600; }
+  .sim-bar-track { flex: 1; height: 7px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+  .sim-bar-fill { height: 100%; border-radius: 999px; }
+  .sim-bar-fill.base { background: #94a3b8; }
+  .sim-bar-fill.model { background: var(--pos); }
+  .sim-hero-div { border-left: 1px solid var(--pos-bd); padding-left: 16px; }
+  @media (max-width: 860px) { .sim-hero-div { border-left: none; padding-left: 0; border-top: 1px solid var(--pos-bd); padding-top: 12px; } }
+  .sim-hero-season-num { font-size: 24px; font-weight: 800; color: var(--ink); line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .sim-hero-note { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+
+  .call-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 13px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: var(--ink-2);
+    box-shadow: var(--shadow);
+  }
+  .call-legend-lbl {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .call-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .call-legend-item .call-badge { min-width: auto; padding: 1px 6px; font-size: 10px; }
+
   footer {
     margin-top: 18px;
     font-size: 12px;
@@ -1172,29 +1266,36 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <div class="wrap">
   <header>
     <div class="title-row">
-      <h1 id="page-title">2026&ndash;27 Draft Board</h1>
+      <h1 id="page-title">2026&ndash;27 ADP-Based Pre-Draft Projections</h1>
+      <span class="fmt-pill">POINTS</span>
       <span class="split-badge live" id="split-badge">LIVE</span>
     </div>
     <div class="header-meta" id="header-meta"></div>
   </header>
 
-  <section class="intro-box" id="intro-box">
+  <section class="sim-hero" id="sim-hero"></section>
+
+  <section class="intro-box collapsed" id="intro-box">
     <div class="intro-head">
-      <div class="intro-title"><span>&#9679;</span>What This Board Is Trying to Do (In Plain English)</div>
-      <button class="intro-toggle" id="intro-toggle">Hide</button>
+      <div class="intro-title"><span>&#9679;</span>Why This Exists, What It Does &amp; What It Doesn&rsquo;t Do</div>
+      <button class="intro-toggle" id="intro-toggle">Show</button>
     </div>
     <div class="intro-grid">
       <div>
-        <div class="intro-step-title">1. Reward Full-Season Reliability, Not Just Per-Game Hype</div>
-        <div class="intro-step-body">A star who averages 45 fantasy points but only plays 40 games leaves a hole in your lineup all winter. Every player here is projected on a <strong>65-game season scale</strong> (counting missed games as an average waiver-wire pickup), so durable players naturally move ahead of injury risks.</div>
+        <div class="intro-step-title">Why This Exists (And Why Beating ADP Is Possible)</div>
+        <div class="intro-step-body">Fantasy leagues are actually <strong>well projected in general</strong>&mdash;consensus ADP already gets most players roughly right, and ignoring ADP to guess from scratch loses badly. The edge comes from repeatable <strong>human error and biases on a small group of players</strong>: overpaying for rookie hype, aging/injury-prone names, and hot shooting streaks while sleeping on durable, rising starters. Avoiding a few landmines and hitting a few undervalued targets is what creates league-winning teams.</div>
       </div>
       <div>
-        <div class="intro-step-title">2. Beat the Draft Room, Don&rsquo;t Ignore It</div>
-        <div class="intro-step-body">Consensus ADP already prices in summer trades and obvious injuries. Instead of guessing from scratch, this board starts from ADP and hunts for habits drafters repeat every year&mdash;like overpaying for hyped rookies and aging names while sleeping on young, healthy starters.</div>
+        <div class="intro-step-title">What This Board Does</div>
+        <div class="intro-step-body">Publishes <strong>ADP-based pre-draft player projections</strong> on a full-season 65-game scale (treating missed games as a waiver-wire replacement so reliability counts). It gives you sharper pre-draft player values&mdash;your draft-day tactics (when to wait on targets, positional runs) are completely up to you.</div>
       </div>
       <div>
-        <div class="intro-step-title">3. How to Draft With It</div>
-        <div class="intro-step-body">Look for green <strong style="color:var(--pos)">Edge</strong> and <strong style="color:var(--pos)">+&Delta;Rk</strong> numbers&mdash;those are players our board likes more than your league-mates do. Skip big red fades, watch your league&rsquo;s <strong>4-Center limit</strong>, and let green targets fall to you in the middle and late rounds.</div>
+        <div class="intro-step-title">What It Doesn&rsquo;t Do</div>
+        <div class="intro-step-body">It does <strong>not</strong> consider mid-season moves, waiver pickups, trades, mid-season injuries, or coaching/rotation changes after Opening Night, and it is not an explicit draft script. This is purely a way to get an edge on draft day&mdash;the rest of the season is up to the manager.</div>
+      </div>
+      <div>
+        <div class="intro-step-title">How to Read the Table &amp; Replay</div>
+        <div class="intro-step-body">Green <strong style="color:var(--pos)">Edge</strong> and <strong style="color:var(--pos)">+&Delta;Rk</strong> highlight players this board projects higher than ADP; red highlights fades. Use the replay slider to scrub through any historical or live season and watch how those pre-draft calls played out game by game.</div>
       </div>
     </div>
   </section>
@@ -1258,6 +1359,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <span><code>Call</code> Grades |Edge| &ge; 0.25 or |&Delta;Rk| &ge; 3</span>
       <span><code>Rank Flips</code> % of player pairs where the model reversed ADP order and picked the higher scorer</span>
     </div>
+  </div>
+
+  <div class="call-legend" aria-label="Call badge legend">
+    <span class="call-legend-lbl">Call Key:</span>
+    <span class="call-legend-item"><span class="call-badge call-hit">TGT &#10003;</span><span class="call-badge call-miss">TGT &#10007;</span> <strong>Target</strong> (projected above ADP; &#10003; beat ADP, &#10007; fell short)</span>
+    <span class="call-legend-item"><span class="call-badge call-hit">FADE &#10003;</span><span class="call-badge call-miss">FADE &#10007;</span> <strong>Fade</strong> (projected below ADP; &#10003; underperformed ADP, &#10007; beat ADP)</span>
+    <span class="call-legend-item"><span class="call-badge call-agree">AGREE</span> <strong>Agree</strong> (matches ADP within |Edge| &lt; 0.25 &amp; |&Delta;Rk| &lt; 3)</span>
   </div>
 
   <div class="table-meta">
@@ -1436,6 +1544,61 @@ function evalCall(r) {
   return hit ? { label: "FADE ✓", cls: "call-hit", score: 1 } : { label: "FADE ✗", cls: "call-miss", score: -1 };
 }
 
+function renderSimHero() {
+  const S = APP.seasons[state.season];
+  const allRows = APP.season_order.map(o => APP.seasons[o.season]?.sim_greedy).filter(Boolean);
+  const el = document.getElementById("sim-hero");
+  if (!el || !allRows.length) return;
+
+  const nYrs = allRows.length;
+  const totalDr = allRows.reduce((a, r) => a + (r.drafts || 720), 0);
+  const perYr = Math.round(totalDr / nYrs);
+  const avgWin = allRows.reduce((a, r) => a + r.win_pct, 0) / nYrs;
+  const avgDiff = allRows.reduce((a, r) => a + r.diff, 0) / nYrs;
+  const avgRk = allRows.reduce((a, r) => a + r.rank, 0) / nYrs;
+  const avgT4 = allRows.reduce((a, r) => a + r.top4_pct, 0) / nYrs;
+  const wins = allRows.filter(r => r.diff > 0).length;
+  const mult = avgWin / (100 / 12);
+  const maxBar = Math.max(35, avgWin * 1.15);
+
+  const cur = S.sim_greedy;
+  let seasonHtml = "";
+  if (cur) {
+    const cls = cur.diff >= 0 ? "pos" : "neg";
+    seasonHtml = `
+      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; ${cur.drafts || 720} drafts)</div>
+      <div class="sim-hero-season-num ${cls}">${cur.win_pct.toFixed(1)}% Win Rate</div>
+      <div class="sim-hero-sub"><strong>${fmtSignedInt(cur.diff)} FPTS</strong> vs. field &middot; Avg Rank <strong>#${cur.rank.toFixed(2)}</strong> &middot; Top-4 <strong>${cur.top4_pct.toFixed(1)}%</strong></div>
+    `;
+  } else {
+    seasonHtml = `
+      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; Live)</div>
+      <div class="sim-hero-season-num muted">Season In Progress</div>
+      <div class="sim-hero-sub">Zero-leakage live board &middot; Tracked in real time below (${S.max_step} team-games played)</div>
+    `;
+  }
+
+  el.innerHTML = `
+    <div>
+      <div class="sim-hero-lbl">${nYrs}-Year Draft-Only Simulated Win Rate (${totalDr.toLocaleString()} Leagues)</div>
+      <div class="sim-hero-big">
+        <span class="sim-hero-num">${avgWin.toFixed(1)}%</span>
+        <span class="sim-hero-mult">${mult.toFixed(1)}&times; baseline</span>
+      </div>
+      <div class="sim-bars">
+        <div class="sim-bar-row"><span class="sim-bar-lbl">ADP (1/12)</span><div class="sim-bar-track"><div class="sim-bar-fill base" style="width:${(8.33 / maxBar * 100).toFixed(1)}%"></div></div><span>8.3%</span></div>
+        <div class="sim-bar-row"><span class="sim-bar-lbl">This Board</span><div class="sim-bar-track"><div class="sim-bar-fill model" style="width:${(avgWin / maxBar * 100).toFixed(1)}%"></div></div><strong>${avgWin.toFixed(1)}%</strong></div>
+      </div>
+      <div class="sim-hero-sub"><strong>${fmtSignedInt(avgDiff)} FPTS</strong> avg &middot; Rank <strong>#${avgRk.toFixed(2)}</strong> &middot; Top-4 <strong>${avgT4.toFixed(1)}%</strong> &middot; <strong>${wins}/${nYrs}</strong> winning yrs</div>
+    </div>
+    <div class="sim-hero-div">${seasonHtml}</div>
+    <div class="sim-hero-div">
+      <div class="sim-hero-lbl">What Simulated Win Rate Means</div>
+      <div class="sim-hero-note">In a fair 12-team league, everyone starts with an <strong>8.3% (1 in 12)</strong> chance to finish 1st. We simulate <strong>${perYr} draft-and-hold leagues/yr</strong> where 11 teams draft by ADP and 1 team blindly picks the highest-ranked available player here&mdash;<strong>zero waiting tricks, trades, or mid-season moves</strong>.</div>
+    </div>
+  `;
+}
+
 function renderSeasonBar() {
   const cv = APP.season_order.filter(x => x.split === "cv");
   const ho = APP.season_order.filter(x => x.split === "holdout");
@@ -1450,7 +1613,7 @@ function renderSeasonBar() {
   const simG = S.sim_greedy;
   if (simG) {
     const nDr = simG.drafts || 720;
-    simHtml = `Greedy Sim (${nDr} drafts): <strong>${fmtSignedInt(simG.diff)} FPTS</strong> &middot; ${simG.win_pct.toFixed(1)}% Win`;
+    simHtml = `<span title="720 draft-and-hold 12-team leagues blindly picking the top-ranked available player (baseline 12-team win rate = 8.3%; no trades or mid-season moves).">Draft-Only Sim (${nDr} dr): <strong>${fmtSignedInt(simG.diff)} FPTS</strong> &middot; ${simG.win_pct.toFixed(1)}% Win <span class="muted">(vs 8.3% base)</span></span>`;
   } else {
     simHtml = `Live season &middot; ${S.max_step} team-games`;
   }
@@ -1521,7 +1684,7 @@ function renderAll() {
   const cum = getSeasonCum(state.season);
   const cp = S.checkpoints[state.step];
 
-  document.getElementById("page-title").textContent = `${S.season} Draft Board`;
+  document.getElementById("page-title").textContent = `${S.season} ADP-Based Pre-Draft Projections`;
   const badge = document.getElementById("split-badge");
   badge.textContent = S.split.toUpperCase();
   badge.className = `split-badge ${S.split}`;
@@ -1722,6 +1885,7 @@ function selectSeason(seasonKey) {
   slider.min = 1;
   slider.max = S.max_step;
   slider.value = S.max_step;
+  renderSimHero();
   renderSeasonBar();
   renderAll();
 }

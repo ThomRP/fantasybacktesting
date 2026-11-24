@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>9-Cat Fantasy Basketball Draft Board &amp; Edge Replay</title>
+<title>ADP-Based Pre-Draft Projections (9-Cat)</title>
 <style>
   :root {
     --bg: #f4f7fb;
@@ -59,10 +59,42 @@
   .intro-title span { color: var(--accent); margin-right: 6px; }
   .intro-toggle { font-size: 11.5px; font-weight: 600; color: var(--muted); background: var(--card-soft); border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
   .intro-toggle:hover { color: var(--accent); border-color: var(--accent-bd); }
-  .intro-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .intro-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 14px 20px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
   .intro-box.collapsed .intro-grid { display: none; }
   .intro-step-title { font-size: 12.5px; font-weight: 700; color: var(--ink); margin-bottom: 3px; }
   .intro-step-body { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+
+  .sim-hero {
+    background: linear-gradient(135deg, #ffffff 0%, #f0fdf4 100%);
+    border: 1px solid var(--pos-bd);
+    border-left: 4px solid var(--pos);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow);
+    display: grid;
+    grid-template-columns: 1.35fr 1fr 1.2fr;
+    gap: 16px;
+    align-items: center;
+  }
+  @media (max-width: 900px) { .sim-hero { grid-template-columns: 1fr; } }
+  .sim-hero-lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 4px; }
+  .sim-hero-big { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .sim-hero-num { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; color: var(--pos); line-height: 1.05; font-variant-numeric: tabular-nums; }
+  .sim-hero-mult { font-size: 12px; font-weight: 700; color: var(--pos); background: var(--pos-bg); border: 1px solid var(--pos-bd); padding: 2px 8px; border-radius: 999px; }
+  .sim-hero-sub { font-size: 12px; color: var(--ink-2); margin-top: 5px; font-variant-numeric: tabular-nums; }
+  .sim-bars { margin-top: 7px; display: flex; flex-direction: column; gap: 4px; }
+  .sim-bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sim-bar-lbl { min-width: 78px; font-weight: 600; }
+  .sim-bar-track { flex: 1; height: 7px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+  .sim-bar-fill { height: 100%; border-radius: 999px; }
+  .sim-bar-fill.base { background: #94a3b8; }
+  .sim-bar-fill.model { background: var(--pos); }
+  .sim-bar-fill.h2h { background: var(--accent); }
+  .sim-hero-div { border-left: 1px solid var(--pos-bd); padding-left: 16px; }
+  @media (max-width: 900px) { .sim-hero-div { border-left: none; padding-left: 0; border-top: 1px solid var(--pos-bd); padding-top: 12px; } }
+  .sim-hero-season-num { font-size: 22px; font-weight: 800; color: var(--ink); line-height: 1.15; font-variant-numeric: tabular-nums; }
+  .sim-hero-note { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
 
   .season-bar { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; box-shadow: var(--shadow); display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
   .season-group { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
@@ -154,10 +186,15 @@
   .cat-midpos { background: #ecfdf5; color: #047857; }
   .cat-lo { background: #ffe4e6; color: #9f1239; }
   .cat-midneg { background: #fff1f2; color: #be123c; }
-  .call-badge { display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid transparent; font-weight: 700; min-width: 52px; text-align: center; }
+  .call-badge { display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid transparent; font-weight: 700; min-width: 58px; text-align: center; }
   .call-hit { color: var(--pos); background: var(--pos-bg); border-color: var(--pos-bd); }
   .call-miss { color: var(--neg); background: var(--neg-bg); border-color: var(--neg-bd); }
   .call-agree { color: var(--muted); background: var(--card-soft); border-color: var(--border); font-weight: 600; }
+
+  .call-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 8px 13px; margin-bottom: 10px; font-size: 12px; color: var(--ink-2); box-shadow: var(--shadow); }
+  .call-legend-lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .call-legend-item { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .call-legend-item .call-badge { min-width: auto; padding: 1px 6px; font-size: 10px; }
 
   footer { margin-top: 18px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 </style>
@@ -166,30 +203,36 @@
 <div class="wrap">
   <header>
     <div class="title-row">
-      <h1 id="page-title">2026&ndash;27 9-Cat Draft Board</h1>
+      <h1 id="page-title">2026&ndash;27 ADP-Based Pre-Draft Projections</h1>
       <span class="cat9-pill">9-CAT (ROTO + H2H)</span>
       <span class="split-badge live" id="split-badge">LIVE</span>
     </div>
     <div class="header-meta" id="header-meta"></div>
   </header>
 
-  <section class="intro-box" id="intro-box">
+  <section class="sim-hero" id="sim-hero"></section>
+
+  <section class="intro-box collapsed" id="intro-box">
     <div class="intro-head">
-      <div class="intro-title"><span>&#9679;</span>Unified 9-Cat Draft Engine (Roto + H2H Each-Cat + H2H Most-Cat)</div>
-      <button class="intro-toggle" id="intro-toggle">Hide</button>
+      <div class="intro-title"><span>&#9679;</span>Why This Exists, What It Does &amp; What It Doesn&rsquo;t Do</div>
+      <button class="intro-toggle" id="intro-toggle">Show</button>
     </div>
     <div class="intro-grid">
       <div>
-        <div class="intro-step-title">1. One Unified Projection Powers Roto &amp; H2H</div>
-        <div class="intro-step-body">Across 400 real 12-team leagues (2018&ndash;26), Roto and H2H team standings correlate at <strong>r = 0.94&ndash;0.96</strong>. One strict zero-leakage 9-Cat model (<strong>PTS, REB, AST, STL, BLK, 3PM, volume-weighted FG%/FT%, and 0.75&times; TO</strong>) wins <strong>8/8 seasons</strong> in all three formats.</div>
+        <div class="intro-step-title">Why This Exists (And Why Beating ADP Is Possible)</div>
+        <div class="intro-step-body">Fantasy leagues are actually <strong>well projected in general</strong>&mdash;consensus ADP gets most players roughly right, and throwing it away to guess from scratch loses badly. The edge comes from repeatable <strong>human error and biases on a small group of players</strong>: overpaying for rookie hype, aging/injury-prone names, and flashy scoring while overlooking durable, efficient multi-category starters. Avoiding a few landmines and hitting a few undervalued targets is what builds league-winning teams.</div>
       </div>
       <div>
-        <div class="intro-step-title">2. Balanced Baseline &amp; Pure Greedy Backtesting</div>
-        <div class="intro-step-body">Every standard 9-Cat ranking starts from a <strong>balanced 9-Cat baseline</strong> (measuring universal player value across the league). Simulations strictly draft <strong>greedily</strong>&mdash;always taking the highest-ranked available player with zero waiting tricks, trades, or mid-season streaming&mdash;to isolate pure projection quality. If your live draft calls for punting (e.g., drafting Giannis &rarr; click <strong>FT%</strong>), use the Punt chips as a reference lens alongside ADP without overreaching early.</div>
+        <div class="intro-step-title">What This Board Does</div>
+        <div class="intro-step-body">Publishes <strong>balanced, ADP-based pre-draft 9-Cat projections</strong> (Z-scores across PTS, REB, AST, STL, BLK, 3PM, volume-weighted FG%/FT%, and 0.75&times; TO) that power both Roto and H2H. Optional <strong>Punt chips</strong> let punters re-rank as a reference lens alongside ADP&mdash;your draft-day tactics are up to you.</div>
       </div>
       <div>
-        <div class="intro-step-title">3. Reading the Z-Scores</div>
-        <div class="intro-step-body">Each category is measured in standard deviations (<strong>Z-score</strong>) vs. the Top-180 pool. Green cells (<code>+1.0</code>+) are elite strengths; red cells (<code>-1.0</code>) are drags. Green <strong>Edge</strong> marks players our model values ahead of Consensus ADP.</div>
+        <div class="intro-step-title">What It Doesn&rsquo;t Do</div>
+        <div class="intro-step-body">It does <strong>not</strong> consider mid-season moves, waiver streaming, trades, mid-season injuries, or coaching/rotation changes after Opening Night, and it is not an explicit draft script. This is purely a way to get an edge on draft day&mdash;the rest of the season is up to the manager.</div>
+      </div>
+      <div>
+        <div class="intro-step-title">How to Read Z-Scores &amp; Replay</div>
+        <div class="intro-step-body">Each category is shown in standard deviations (<strong>Z-score</strong>) vs. the Top-180 pool: green (<code>+1.0</code>+) is an elite strength, red (<code>-1.0</code>) is a drag. Green <strong style="color:var(--pos)">Edge</strong> marks players projected ahead of ADP; scrub the slider below to replay any season game by game.</div>
       </div>
     </div>
   </section>
@@ -260,8 +303,8 @@
       <div class="stat-val" id="kpi-corr">&mdash;</div>
       <div class="stat-sub" id="kpi-corr-sub">&mdash;</div>
     </div>
-    <div class="stat-box" title="12-team x 13-round daily-active-lineup simulator results for Reach-vs.-Wait across Roto, H2H Each-Cat, and H2H Most-Cat.">
-      <div class="stat-label" id="kpi-sim-lbl">3-Format Sim (360 drafts)</div>
+    <div class="stat-box" title="12-team x 13-round draft-and-hold simulator blindly drafting the highest-ranked available player (Pure Greedy) across Roto, H2H Each-Cat, and H2H Most-Cat.">
+      <div class="stat-label" id="kpi-sim-lbl">Draft-Only Sim Win% (720 dr)</div>
       <div class="stat-val" id="kpi-sim">&mdash;</div>
       <div class="stat-sub" id="kpi-sim-sub">&mdash;</div>
     </div>
@@ -282,6 +325,13 @@
       <button class="pill" data-filter="misses">Misses</button>
       <button class="pill" data-filter="rookies">Rookies</button>
     </div>
+  </div>
+
+  <div class="call-legend" aria-label="Call badge legend">
+    <span class="call-legend-lbl">Call Key:</span>
+    <span class="call-legend-item"><span class="call-badge call-hit">TGT &#10003;</span><span class="call-badge call-miss">TGT &#10007;</span> <strong>Target</strong> (projected above ADP; &#10003; beat ADP Z, &#10007; fell short)</span>
+    <span class="call-legend-item"><span class="call-badge call-hit">FADE &#10003;</span><span class="call-badge call-miss">FADE &#10007;</span> <strong>Fade</strong> (projected below ADP; &#10003; underperformed ADP Z, &#10007; beat ADP Z)</span>
+    <span class="call-legend-item"><span class="call-badge call-agree">AGREE</span> <strong>Agree</strong> (matches ADP within |Edge| &lt; 0.30 &amp; |&Delta;Rk| &lt; 3)</span>
   </div>
 
   <div class="table-meta">
@@ -407,6 +457,61 @@ function togglePlay() {
   }, state.speedMs);
 }
 
+function renderSimHero() {
+  const S = APP.seasons[state.season];
+  const allRows = APP.season_order.map(o => APP.seasons[o.season]?.sim_greedy).filter(Boolean);
+  const el = document.getElementById("sim-hero");
+  if (!el || !allRows.length) return;
+
+  const nYrs = allRows.length;
+  const totalDr = allRows.reduce((a, r) => a + (r.drafts || 720), 0);
+  const perYr = Math.round(totalDr / nYrs);
+  const avgRotoW = allRows.reduce((a, r) => a + r.roto_win, 0) / nYrs;
+  const avgH2heW = allRows.reduce((a, r) => a + r.h2he_win, 0) / nYrs;
+  const avgH2hmW = allRows.reduce((a, r) => a + r.h2hm_win, 0) / nYrs;
+  const avgRotoRk = allRows.reduce((a, r) => a + r.roto_rk, 0) / nYrs;
+  const mult = avgRotoW / (100 / 12);
+  const maxBar = Math.max(38, avgRotoW * 1.15);
+
+  const cur = S.sim_greedy;
+  let seasonHtml = "";
+  if (cur) {
+    seasonHtml = `
+      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; ${cur.drafts || 720} drafts)</div>
+      <div class="sim-hero-season-num pos">${cur.roto_win.toFixed(1)}% Roto &middot; ${cur.h2hm_win.toFixed(1)}% H2H-M</div>
+      <div class="sim-hero-sub">H2H-Each <strong>${cur.h2he_win.toFixed(1)}%</strong> &middot; Roto <strong>${cur.roto_pts.toFixed(1)}/108</strong> (Avg Rk <strong>#${cur.roto_rk.toFixed(2)}</strong>)</div>
+    `;
+  } else {
+    seasonHtml = `
+      <div class="sim-hero-lbl">Selected Season (${S.season} &middot; Live)</div>
+      <div class="sim-hero-season-num muted">Season In Progress</div>
+      <div class="sim-hero-sub">Zero-leakage live board &middot; Tracked in real time below (${S.max_step} team-games played)</div>
+    `;
+  }
+
+  el.innerHTML = `
+    <div>
+      <div class="sim-hero-lbl">${nYrs}-Year Draft-Only Simulated Win Rate (${totalDr.toLocaleString()} Leagues)</div>
+      <div class="sim-hero-big">
+        <span class="sim-hero-num">${avgRotoW.toFixed(1)}%</span>
+        <span class="sim-hero-mult">${mult.toFixed(1)}&times; baseline</span>
+      </div>
+      <div class="sim-bars">
+        <div class="sim-bar-row"><span class="sim-bar-lbl">ADP (1/12)</span><div class="sim-bar-track"><div class="sim-bar-fill base" style="width:${(8.33 / maxBar * 100).toFixed(1)}%"></div></div><span>8.3%</span></div>
+        <div class="sim-bar-row"><span class="sim-bar-lbl">9-Cat Roto</span><div class="sim-bar-track"><div class="sim-bar-fill model" style="width:${(avgRotoW / maxBar * 100).toFixed(1)}%"></div></div><strong>${avgRotoW.toFixed(1)}%</strong></div>
+        <div class="sim-bar-row"><span class="sim-bar-lbl">H2H Each</span><div class="sim-bar-track"><div class="sim-bar-fill h2h" style="width:${(avgH2heW / maxBar * 100).toFixed(1)}%"></div></div><strong>${avgH2heW.toFixed(1)}%</strong></div>
+        <div class="sim-bar-row"><span class="sim-bar-lbl">H2H Most</span><div class="sim-bar-track"><div class="sim-bar-fill h2h" style="width:${(avgH2hmW / maxBar * 100).toFixed(1)}%"></div></div><strong>${avgH2hmW.toFixed(1)}%</strong></div>
+      </div>
+      <div class="sim-hero-sub">Avg Roto Rank <strong>#${avgRotoRk.toFixed(2)}</strong> &middot; <strong>${nYrs}/${nYrs}</strong> winning seasons across all 3 formats</div>
+    </div>
+    <div class="sim-hero-div">${seasonHtml}</div>
+    <div class="sim-hero-div">
+      <div class="sim-hero-lbl">What Simulated Win Rate Means</div>
+      <div class="sim-hero-note">In a fair 12-team league, everyone starts with an <strong>8.3% (1 in 12)</strong> chance to finish 1st. We simulate <strong>${perYr} draft-and-hold leagues/yr</strong> where 11 teams draft by ADP and 1 team blindly picks the highest-ranked available player here&mdash;<strong>zero waiting, punting, trades, or mid-season moves</strong>.</div>
+    </div>
+  `;
+}
+
 function selectSeason(seasonKey) {
   stopPlay();
   state.season = seasonKey;
@@ -414,7 +519,7 @@ function selectSeason(seasonKey) {
   state.step = S.max_step - 1;
   buildSeasonButtons();
 
-  document.getElementById("page-title").textContent = `${seasonKey} 9-Cat Draft Board`;
+  document.getElementById("page-title").textContent = `${seasonKey} ADP-Based Pre-Draft Projections`;
   const badge = document.getElementById("split-badge");
   badge.className = "split-badge " + S.split;
   badge.textContent = S.split.toUpperCase();
@@ -428,11 +533,12 @@ function selectSeason(seasonKey) {
   const simNote = document.getElementById("season-sim-note");
   const simG = S.sim_greedy;
   if (simG) {
-    simNote.innerHTML = `Greedy Sim (${simG.drafts} dr): <strong>${simG.roto_pts.toFixed(1)}</strong> Roto (${simG.roto_win.toFixed(1)}% Win) &middot; H2H-M <strong>${simG.h2hm_win.toFixed(1)}%</strong> Win`;
+    simNote.innerHTML = `<span title="720 draft-and-hold 12-team leagues blindly picking the top-ranked available player (baseline 12-team win rate = 8.3%; no trades or mid-season moves).">Draft-Only Sim (${simG.drafts} dr): <strong>${simG.roto_pts.toFixed(1)}</strong> Roto (${simG.roto_win.toFixed(1)}% Win) &middot; H2H-M <strong>${simG.h2hm_win.toFixed(1)}%</strong> Win <span class="muted">(vs 8.3% base)</span></span>`;
   } else {
     simNote.innerHTML = `Live Out-of-Sample Season (Zero Leakage)`;
   }
 
+  renderSimHero();
   renderStep();
 }
 
@@ -507,20 +613,20 @@ function renderKPIs() {
   const k4s = document.getElementById("kpi-sim-sub");
   const simG = S.sim_greedy;
   if (simG) {
-    document.getElementById("kpi-sim-lbl").textContent = `Greedy 3-Format Sim (${simG.drafts} dr)`;
+    document.getElementById("kpi-sim-lbl").textContent = `Draft-Only Sim Win% (${simG.drafts} dr)`;
     k4.innerHTML = `${simG.roto_win.toFixed(1)}% / ${simG.h2he_win.toFixed(1)}% / ${simG.h2hm_win.toFixed(1)}%`;
     k4.className = "stat-val pos";
-    k4s.innerHTML = `Win%: <strong>Roto</strong> / <strong>H2H-E</strong> / <strong>H2H-M</strong> (Avg Rk ${simG.roto_rk.toFixed(2)})`;
+    k4s.innerHTML = `Roto / H2H-E / H2H-M (vs <strong>8.3%</strong> 12T base &middot; Rk ${simG.roto_rk.toFixed(2)})`;
   } else {
     const allSims = APP.season_order.map(o => APP.seasons[o.season]?.sim_greedy).filter(Boolean);
     const nS = allSims.length || 1;
     const aR = allSims.reduce((a, r) => a + r.roto_win, 0) / nS;
     const aE = allSims.reduce((a, r) => a + r.h2he_win, 0) / nS;
     const aM = allSims.reduce((a, r) => a + r.h2hm_win, 0) / nS;
-    document.getElementById("kpi-sim-lbl").textContent = "Greedy 3-Format Sim (Live)";
+    document.getElementById("kpi-sim-lbl").textContent = "Draft-Only Sim Win% (Live)";
     k4.innerHTML = "In Progress";
     k4.className = "stat-val muted";
-    k4s.innerHTML = `${nS}-Yr Avg: <strong>${aR.toFixed(1)}%</strong> Roto &middot; <strong>${aE.toFixed(1)}%</strong> H2H-E &middot; <strong>${aM.toFixed(1)}%</strong> H2H-M`;
+    k4s.innerHTML = `${nS}-Yr Avg (vs 8.3% base): <strong>${aR.toFixed(1)}%</strong> Roto &middot; <strong>${aE.toFixed(1)}%</strong> H2H-E &middot; <strong>${aM.toFixed(1)}%</strong> H2H-M`;
   }
 }
 
@@ -561,11 +667,23 @@ function buildRowsWithPunt() {
     r.dyn_rk = i + 1;
     r.dyn_drk = r.mrk - r.dyn_rk;
     r.dyn_e = isPunted ? (r.dyn_pr - r.mp - medDiff) : r.e;
-    const isTgt = r.dyn_e >= 0.30;
-    const isFade = r.dyn_e <= -0.30;
-    if (!isTgt && !isFade) r.call = "AGREE";
-    else if ((isTgt && r.vs_adp > 0) || (isFade && r.vs_adp < 0)) r.call = "HIT";
-    else r.call = "MISS";
+    const bigEdge = Math.abs(r.dyn_e) >= 0.30;
+    const bigShift = Math.abs(r.dyn_drk) >= 3;
+    if (!bigEdge && !bigShift) {
+      r.call_label = "AGREE";
+      r.call_cls = "call-agree";
+      r.call_score = 0;
+    } else {
+      const liked = r.dyn_e !== 0 ? (r.dyn_e > 0) : (r.dyn_drk > 0);
+      const hit = liked ? (r.vs_adp > 0) : (r.vs_adp < 0);
+      if (liked) {
+        r.call_label = hit ? "TGT ✓" : "TGT ✗";
+      } else {
+        r.call_label = hit ? "FADE ✓" : "FADE ✗";
+      }
+      r.call_cls = hit ? "call-hit" : "call-miss";
+      r.call_score = hit ? 1 : -1;
+    }
   });
   return sorted;
 }
@@ -587,7 +705,7 @@ function renderTable() {
     { k: "act_g", l: "G", sep: true },
     { k: "act_z", l: "Act Z" },
     { k: "vs_adp", l: "vs ADP" },
-    { k: "call", l: "Call" },
+    { k: "call_score", l: "Call" },
   ];
   const thead = document.getElementById("thead-row");
   thead.innerHTML = cols.map(c => {
@@ -611,8 +729,8 @@ function renderTable() {
   else if (state.tab === "fades") view = rowsAll.filter(r => r.mrk <= 150 && r.dyn_e < 0).sort((a, b) => a.dyn_e - b.dyn_e).slice(0, 40);
   else if (state.tab === "sleepers") view = rowsAll.filter(r => r.mrk > 150);
 
-  if (state.filter === "hits") view = view.filter(r => r.call === "HIT");
-  else if (state.filter === "misses") view = view.filter(r => r.call === "MISS");
+  if (state.filter === "hits") view = view.filter(r => r.call_score === 1);
+  else if (state.filter === "misses") view = view.filter(r => r.call_score === -1);
   else if (state.filter === "rookies") view = view.filter(r => r.t === "ROOK");
 
   if (state.search.trim()) {
@@ -646,7 +764,7 @@ function renderTable() {
     const drkCls = r.dyn_drk >= 5 ? "pos" : (r.dyn_drk <= -5 ? "neg" : "muted");
     const eCls = r.dyn_e >= 0.30 ? "edge-pill edge-pos" : (r.dyn_e <= -0.30 ? "edge-pill edge-neg" : "edge-pill edge-flat");
     const vsCls = r.vs_adp >= 0.5 ? "pos" : (r.vs_adp <= -0.5 ? "neg" : "muted");
-    const callCls = r.call === "HIT" ? "call-badge call-hit" : (r.call === "MISS" ? "call-badge call-miss" : "call-badge call-agree");
+    const callCls = `call-badge ${r.call_cls}`;
     const cArr = isActCat ? r.az : r.pz;
     const catTds = cArr.map((v, ci) => {
       const cls = [ci === 0 ? "group-sep" : "", state.punted.has(ci) ? "punted-col" : ""].filter(Boolean).join(" ");
@@ -664,7 +782,7 @@ function renderTable() {
       <td class="group-sep muted">${r.act_g}</td>
       <td>${fmtSigned(r.act_z, 2)}</td>
       <td class="${vsCls}">${fmtSigned(r.vs_adp, 2)}</td>
-      <td><span class="${callCls}">${r.call}</span></td>
+      <td><span class="${callCls}">${r.call_label}</span></td>
     </tr>`;
   }).join("");
 }
@@ -714,6 +832,7 @@ document.getElementById("edge-chart").onclick = e => {
   const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
   stopPlay();
   state.step = Math.round(frac * (S.max_step - 1));
+  renderSimHero();
   renderStep();
 };
 document.querySelectorAll(".tab-btn").forEach(btn => {
