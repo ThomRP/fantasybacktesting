@@ -16,12 +16,14 @@ from urllib.request import Request, urlopen
 
 # Map Basketball-Reference 3-letter team codes -> ESPN team abbreviations used in data/*/games.csv
 BREF_TO_ESPN = {
-    "ATL": "ATL", "BOS": "BOS", "BRK": "BKN", "CHO": "CHA", "CHI": "CHI",
+    "ATL": "ATL", "BOS": "BOS", "BRK": "BKN", "NJN": "BKN",
+    "CHO": "CHA", "CHA": "CHA", "CHH": "CHA", "CHI": "CHI",
     "CLE": "CLE", "DAL": "DAL", "DEN": "DEN", "DET": "DET", "GSW": "GS",
     "HOU": "HOU", "IND": "IND", "LAC": "LAC", "LAL": "LAL", "MEM": "MEM",
-    "MIA": "MIA", "MIL": "MIL", "MIN": "MIN", "NOP": "NO",  "NYK": "NY",
-    "OKC": "OKC", "ORL": "ORL", "PHI": "PHI", "PHO": "PHX", "POR": "POR",
-    "SAC": "SAC", "SAS": "SA",  "TOR": "TOR", "UTA": "UTAH", "WAS": "WSH",
+    "MIA": "MIA", "MIL": "MIL", "MIN": "MIN", "NOP": "NO",  "NOH": "NO", "NOK": "NO",
+    "NYK": "NY",  "OKC": "OKC", "SEA": "OKC", "ORL": "ORL", "PHI": "PHI",
+    "PHO": "PHX", "POR": "POR", "SAC": "SAC", "SAS": "SA",  "TOR": "TOR",
+    "UTA": "UTAH", "WAS": "WSH",
 }
 
 
@@ -135,7 +137,7 @@ def fetch_season_odds(end_year: int):
 
 def main():
     all_rows = []
-    for idx, end_year in enumerate(range(2017, 2028)):
+    for idx, end_year in enumerate(range(2009, 2028)):
         if idx > 0:
             time.sleep(3.5)  # Polite rate limit for Basketball-Reference
         rows = fetch_season_odds(end_year)

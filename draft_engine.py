@@ -1470,7 +1470,17 @@ def _effective_residual_lam(adp, lam_early, lam_late):
     return float(lam_early) + t * (float(lam_late) - float(lam_early))
 
 
-def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver, lam=0.50, lam_late=None, use_advanced_stats=False):
+def _recency_weights(rows, halflife):
+    """Normalized exponential recency weights (mean=1.0) anchored to latest training season in `rows`."""
+    if halflife is None or halflife <= 0 or not rows:
+        return None
+    years = np.array([int(str(r["draft_season"])[:4]) for r in rows], dtype=float)
+    ref_year = float(np.max(years))
+    w = np.power(0.5, np.maximum(0.0, ref_year - years) / float(halflife))
+    return w * (len(w) / max(float(np.sum(w)), 1e-9))
+
+
+def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver, lam=0.50, lam_late=None, use_advanced_stats=False, recency_halflife=None):
     """Fit Stage-2 `unified_equal` (Huber + Decomposed + shallow L1 GBDT vets + Rookie Huber) on custom-scored ADP pools."""
     tr_vets = [
         r for r in training_adp_rows
@@ -1504,6 +1514,7 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
     vet_peer_center = 0.0
     if tr_vets and ev_vets:
         y_vet = np.array([float(r["fppg_above_adp"]) for r in tr_vets], dtype=float)
+        w_vet = _recency_weights(tr_vets, recency_halflife)
         h_feats = active_features(tr_vets, VET_RESIDUAL_FEATURES)
         X_tr_h = to_matrix(tr_vets, h_feats)
         X_ev_h = to_matrix(ev_vets, h_feats)
@@ -1512,11 +1523,15 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
             StandardScaler(),
             HuberRegressor(alpha=25.0, epsilon=1.35, max_iter=1000),
         )
-        h_pipe.fit(X_tr_h, y_vet)
+        if w_vet is not None:
+            h_pipe.fit(X_tr_h, y_vet, huberregressor__sample_weight=w_vet)
+        else:
+            h_pipe.fit(X_tr_h, y_vet)
         ev_h = h_pipe.predict(X_ev_h)
         vet_coefs = dict(zip(h_feats, map(float, h_pipe.named_steps["huberregressor"].coef_)))
 
         rate_rows = [r for r in tr_vets if r.get("next_mpg") is not None and r.get("next_fppm") is not None]
+        w_rate = _recency_weights(rate_rows, recency_halflife)
         mpg_f = active_features(rate_rows, VET_RES_MPG_FEATURES + (VET_RES_MPG_ADV_FEATURES if use_advanced_stats else ()))
         fppm_f = active_features(rate_rows, VET_RES_FPPM_FEATURES + (VET_RES_FPPM_ADV_FEATURES if use_advanced_stats else ()))
         av_f = active_features(tr_vets, VET_RES_AVAIL_FEATURES)
@@ -1524,6 +1539,9 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
         X_m, y_m = to_matrix(rate_rows, mpg_f), np.array([float(r["next_mpg"]) for r in rate_rows], dtype=float)
         X_f, y_f = to_matrix(rate_rows, fppm_f), np.array([float(r["next_fppm"]) for r in rate_rows], dtype=float)
         X_a, y_a = to_matrix(tr_vets, av_f), np.array([float(r["next_avail_frac"]) for r in tr_vets], dtype=float)
+
+        def _fit_ridge(pipe, X_, y_, sw_):
+            return pipe.fit(X_, y_, ridgecv__sample_weight=sw_) if sw_ is not None else pipe.fit(X_, y_)
 
         groups = np.array([r["draft_season"] for r in tr_vets])
         n_s = len(set(groups))
@@ -1535,20 +1553,22 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
                 tr_sub = [tr_vets[i] for i in tr_i]
                 va_sub = [tr_vets[i] for i in va_i]
                 tr_r = [r for r in tr_sub if r.get("next_mpg") is not None and r.get("next_fppm") is not None]
-                oof_m[va_i] = np.clip(_make_spline_ridge(mpg_f, spline_set).fit(to_matrix(tr_r, mpg_f), [float(r["next_mpg"]) for r in tr_r]).predict(to_matrix(va_sub, mpg_f)), 5.0, 42.0)
-                oof_f[va_i] = np.clip(_make_spline_ridge(fppm_f, spline_set).fit(to_matrix(tr_r, fppm_f), [float(r["next_fppm"]) for r in tr_r]).predict(to_matrix(va_sub, fppm_f)), 0.1, 5.0)
-                oof_a[va_i] = np.clip(_make_spline_ridge(av_f, spline_set).fit(to_matrix(tr_sub, av_f), [float(r["next_avail_frac"]) for r in tr_sub]).predict(to_matrix(va_sub, av_f)), 0.0, 1.0)
+                sw_r = _recency_weights(tr_r, recency_halflife)
+                sw_a = _recency_weights(tr_sub, recency_halflife)
+                oof_m[va_i] = np.clip(_fit_ridge(_make_spline_ridge(mpg_f, spline_set), to_matrix(tr_r, mpg_f), [float(r["next_mpg"]) for r in tr_r], sw_r).predict(to_matrix(va_sub, mpg_f)), 5.0, 42.0)
+                oof_f[va_i] = np.clip(_fit_ridge(_make_spline_ridge(fppm_f, spline_set), to_matrix(tr_r, fppm_f), [float(r["next_fppm"]) for r in tr_r], sw_r).predict(to_matrix(va_sub, fppm_f)), 0.1, 5.0)
+                oof_a[va_i] = np.clip(_fit_ridge(_make_spline_ridge(av_f, spline_set), to_matrix(tr_sub, av_f), [float(r["next_avail_frac"]) for r in tr_sub], sw_a).predict(to_matrix(va_sub, av_f)), 0.0, 1.0)
         else:
-            oof_m = np.clip(_make_spline_ridge(mpg_f, spline_set).fit(X_m, y_m).predict(to_matrix(tr_vets, mpg_f)), 5.0, 42.0)
-            oof_f = np.clip(_make_spline_ridge(fppm_f, spline_set).fit(X_f, y_f).predict(to_matrix(tr_vets, fppm_f)), 0.1, 5.0)
-            oof_a = np.clip(_make_spline_ridge(av_f, spline_set).fit(X_a, y_a).predict(X_a), 0.0, 1.0)
+            oof_m = np.clip(_fit_ridge(_make_spline_ridge(mpg_f, spline_set), X_m, y_m, w_rate).predict(to_matrix(tr_vets, mpg_f)), 5.0, 42.0)
+            oof_f = np.clip(_fit_ridge(_make_spline_ridge(fppm_f, spline_set), X_f, y_f, w_rate).predict(to_matrix(tr_vets, fppm_f)), 0.1, 5.0)
+            oof_a = np.clip(_fit_ridge(_make_spline_ridge(av_f, spline_set), X_a, y_a, w_vet).predict(X_a), 0.0, 1.0)
 
         tr_w = np.array([float(r["prior_waiver_fppg"]) for r in tr_vets])
         tr_struct = oof_a * (oof_m * oof_f) + (1.0 - oof_a) * tr_w
 
-        ev_m = np.clip(_make_spline_ridge(mpg_f, spline_set).fit(X_m, y_m).predict(to_matrix(ev_vets, mpg_f)), 5.0, 42.0)
-        ev_f = np.clip(_make_spline_ridge(fppm_f, spline_set).fit(X_f, y_f).predict(to_matrix(ev_vets, fppm_f)), 0.1, 5.0)
-        ev_a = np.clip(_make_spline_ridge(av_f, spline_set).fit(X_a, y_a).predict(to_matrix(ev_vets, av_f)), 0.0, 1.0)
+        ev_m = np.clip(_fit_ridge(_make_spline_ridge(mpg_f, spline_set), X_m, y_m, w_rate).predict(to_matrix(ev_vets, mpg_f)), 5.0, 42.0)
+        ev_f = np.clip(_fit_ridge(_make_spline_ridge(fppm_f, spline_set), X_f, y_f, w_rate).predict(to_matrix(ev_vets, fppm_f)), 0.1, 5.0)
+        ev_a = np.clip(_fit_ridge(_make_spline_ridge(av_f, spline_set), X_a, y_a, w_vet).predict(to_matrix(ev_vets, av_f)), 0.0, 1.0)
         ev_w = np.array([float(r["prior_waiver_fppg"]) for r in ev_vets])
         ev_struct = ev_a * (ev_m * ev_f) + (1.0 - ev_a) * ev_w
 
@@ -1560,7 +1580,11 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
         ev_c = np.array([float(r["market_collapse_excess"]) for r in ev_vets])
 
         meta = make_pipeline(StandardScaler(), HuberRegressor(alpha=10.0, max_iter=1000))
-        meta.fit(np.column_stack([tr_struct - tr_mkt, (tr_struct - tr_mkt) * tr_la, tr_la, tr_c]), y_vet)
+        X_meta = np.column_stack([tr_struct - tr_mkt, (tr_struct - tr_mkt) * tr_la, tr_la, tr_c])
+        if w_vet is not None:
+            meta.fit(X_meta, y_vet, huberregressor__sample_weight=w_vet)
+        else:
+            meta.fit(X_meta, y_vet)
         ev_d = meta.predict(np.column_stack([ev_struct - ev_mkt, (ev_struct - ev_mkt) * ev_la, ev_la, ev_c]))
 
         if len(tr_vets) >= 80:
@@ -1574,7 +1598,10 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
                 max_bins=64,
                 random_state=42,
             )
-            gb.fit(X_tr_h, y_vet)
+            if w_vet is not None:
+                gb.fit(X_tr_h, y_vet, sample_weight=w_vet)
+            else:
+                gb.fit(X_tr_h, y_vet)
             ev_g = gb.predict(X_ev_h)
             ev_eq = 0.375 * ev_h + 0.375 * ev_d + 0.25 * ev_g
         else:
@@ -1616,7 +1643,11 @@ def fit_predict_residual_unified(training_adp_rows, evaluated_all, prior_waiver,
                 StandardScaler(),
                 HuberRegressor(alpha=30.0, epsilon=1.35, max_iter=1000),
             )
-            r_pipe.fit(to_matrix(tr_work, r_feats), y_rk)
+            w_rk = _recency_weights(tr_work, recency_halflife)
+            if w_rk is not None:
+                r_pipe.fit(to_matrix(tr_work, r_feats), y_rk, huberregressor__sample_weight=w_rk)
+            else:
+                r_pipe.fit(to_matrix(tr_work, r_feats), y_rk)
             ev_r = r_pipe.predict(to_matrix(ev_work, r_feats))
             rk_coefs = dict(zip(r_feats, map(float, r_pipe.named_steps["huberregressor"].coef_)))
         else:
@@ -2242,18 +2273,25 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, wait_lam=DEFAULT_WAI
     return sim_summary, sim_seasons
 
 
-def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None, use_advanced_stats=False):
+def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None, use_advanced_stats=False, min_train_season="2016-17", recency_halflife=None):
     seasons_dirs, season_data, births_cache, profiles_cache = load_all_completed_seasons(data, scoring)
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, _, _ = build_all_training_datasets(
         data, seasons_dirs, season_data, births_cache, profiles_cache, max_pool_adp=max_pool_adp,
     )
 
-    eval_seasons = sorted(adp_pool_by_s)
+    eff_min_s = None if (not min_train_season or str(min_train_season).lower() == "all") else str(min_train_season)
+    train_adp_seasons = sorted(s for s in adp_pool_by_s if eff_min_s is None or s >= eff_min_s)
+    # Full 12-team evaluation seasons require >=156 ADP candidates (2014-15+ multi-platform FantasyPros)
+    eval_seasons = [s for s in train_adp_seasons if len(adp_pool_by_s[s]) >= 156]
+    if len(eval_seasons) <= holdout_seasons:
+        eval_seasons = train_adp_seasons
     if len(eval_seasons) <= holdout_seasons:
         raise ValueError(f"need more completed draft seasons than --holdout-seasons ({len(eval_seasons)} found)")
 
     development, holdout = eval_seasons[:-holdout_seasons], eval_seasons[-holdout_seasons:]
-    cv_seasons = development[2:][-cv_folds:] if len(development) >= 3 else development[1:]
+    # Require at least 2 prior training seasons before the first evaluated CV fold
+    cv_eligible = [s for s in development if sum(1 for ts in train_adp_seasons if ts < s) >= 2]
+    cv_seasons = cv_eligible[-cv_folds:] if cv_eligible else development[1:]
     scored_seasons = sorted(set(cv_seasons) | set(holdout))
 
     board_rows_by_split = defaultdict(list)
@@ -2267,9 +2305,9 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LA
         cutoff = development[-1] if split == "holdout" else target_s
 
         # Strictly earlier completed seasons for training (zero future leakage)
-        tr_pure_vets = [r for s, grp in pure_vet_by_s.items() if (s <= cutoff if split == "holdout" else s < cutoff) for r in grp]
-        tr_pure_rks = [r for s, grp in pure_rk_by_s.items() if (s <= cutoff if split == "holdout" else s < cutoff) for r in grp]
-        tr_adp_rows = [r for s, grp in adp_pool_by_s.items() if (s <= cutoff if split == "holdout" else s < cutoff) for r in grp]
+        tr_pure_vets = [r for s, grp in pure_vet_by_s.items() if (eff_min_s is None or s >= eff_min_s) and (s <= cutoff if split == "holdout" else s < cutoff) for r in grp]
+        tr_pure_rks = [r for s, grp in pure_rk_by_s.items() if (eff_min_s is None or s >= eff_min_s) and (s <= cutoff if split == "holdout" else s < cutoff) for r in grp]
+        tr_adp_rows = [r for s, grp in adp_pool_by_s.items() if (eff_min_s is None or s >= eff_min_s) and (s <= cutoff if split == "holdout" else s < cutoff) for r in grp]
 
         cands = [r.copy() for r in adp_pool_by_s[target_s]]
         prior_waiver = season_data[prior_year]["waiver_fppg"]
@@ -2281,7 +2319,7 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LA
         blend50_preds, _ = apply_optional_adp_layer(cands, pure_preds, adp_weight=0.50, apply_collapse_guard=True)
 
         # Stage 2: ADP-Aware Residual Champion (`unified_equal`, lam) + Reach-vs-Wait (`wait_lam`)
-        res_resid = fit_predict_residual_unified(tr_adp_rows, cands, prior_waiver, lam=lam, use_advanced_stats=use_advanced_stats)
+        res_resid = fit_predict_residual_unified(tr_adp_rows, cands, prior_waiver, lam=lam, use_advanced_stats=use_advanced_stats, recency_halflife=recency_halflife)
         resid_preds = res_resid["residual_proj"]
         clip_val = max(4.0, COLLAPSE_WAIVER_RATIO * prior_waiver)
         raw_res = res_resid["raw_residuals"]
@@ -2454,6 +2492,8 @@ def generate_live_board(
     rookies_csv=None,
     board_limit=225,
     use_advanced_stats=False,
+    min_train_season="2016-17",
+    recency_halflife=None,
 ):
     """Generate a ready-to-use ranked draft board in either Stage-1 (`pure_stats`) or Stage-2 (`residual`) mode."""
     if not re.fullmatch(r"\d{4}-\d{2}", target_season):
@@ -2468,8 +2508,9 @@ def generate_live_board(
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, played_before, history_available = build_all_training_datasets(
         data, seasons_dirs, season_data, births_cache, profiles_cache,
     )
-    prior_seasons_pure = sorted(s for s in pure_vet_by_s if s < target_season)
-    prior_seasons_adp = sorted(s for s in adp_pool_by_s if s < target_season)
+    eff_min_s = None if (not min_train_season or str(min_train_season).lower() == "all") else str(min_train_season)
+    prior_seasons_pure = sorted(s for s in pure_vet_by_s if s < target_season and (eff_min_s is None or s >= eff_min_s))
+    prior_seasons_adp = sorted(s for s in adp_pool_by_s if s < target_season and (eff_min_s is None or s >= eff_min_s))
     if not prior_seasons_pure:
         raise ValueError(f"no completed training seasons before {target_season}")
 
@@ -2691,7 +2732,7 @@ def generate_live_board(
 
     if eff_mode == "residual":
         tr_adp_rows = [r for s in prior_seasons_adp for r in adp_pool_by_s[s]]
-        res_out = fit_predict_residual_unified(tr_adp_rows, cands, prior_s["waiver_fppg"], lam=lam, use_advanced_stats=use_advanced_stats)
+        res_out = fit_predict_residual_unified(tr_adp_rows, cands, prior_s["waiver_fppg"], lam=lam, use_advanced_stats=use_advanced_stats, recency_halflife=recency_halflife)
         model_preds = res_out["residual_proj"]
         proj_mpg, proj_fppm, proj_avail = res_out["proj_mpg"], res_out["proj_fppm"], res_out["proj_avail"]
         alerts = ["CHECK_INJURY" if r.get("market_collapse_excess", 0.0) > 0 else "" for r in cands]
@@ -2847,7 +2888,9 @@ def main():
     parser.add_argument("--trials-per-slot", type=int, default=12, help="Monte Carlo drafts per slot in --backtest (default: 12)")
     parser.add_argument("--adp-var", type=float, default=2.0, help="villain R2-13 Uniform ADP noise bound (default: 2.0)")
     parser.add_argument("--skip-sim", action="store_true", help="skip the 12-team ESPN simulator in --backtest")
-    parser.add_argument("--advanced-stats", action="store_true", help="opt-in: enable local BPM/VORP/On-Off/USG% extension")
+    parser.add_argument("--advanced-stats", action="store_true", help="opt-in: enable local BPM/VORP/On-Off/USG%% extension")
+    parser.add_argument("--min-train-season", default="2016-17", help="earliest draft season to include in training (default: 2016-17; use 2014-15 or 2008-09/all for expanded history)")
+    parser.add_argument("--recency-halflife", type=float, default=None, help="opt-in: exponential recency half-life in seasons (e.g. 6.0); default None = equal weights")
     parser.add_argument("--seed", type=int, default=None, help="random seed for simulator")
     args = parser.parse_args()
 
@@ -2875,6 +2918,8 @@ def main():
                 exclude_players=args.exclude_players,
                 rookies_csv=args.rookies_csv,
                 use_advanced_stats=use_adv,
+                min_train_season=args.min_train_season,
+                recency_halflife=args.recency_halflife,
             )
         else:
             run_backtest(
@@ -2890,6 +2935,8 @@ def main():
                 adp_var=args.adp_var,
                 seed=args.seed,
                 use_advanced_stats=use_adv,
+                min_train_season=args.min_train_season,
+                recency_halflife=args.recency_halflife,
             )
     except (OSError, ValueError, KeyError, csv.Error) as error:
         parser.exit(1, f"Draft engine failed: {error}\n")

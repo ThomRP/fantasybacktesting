@@ -167,6 +167,13 @@ def read_season(folder, *, split_at_all_star=True, include_box_scores=False):
             default=None,
         )
         if all_star_date is None:
+            # Official NBA All-Star Sunday dates for pre-2010 SportsDataverse schedules that omit exhibition rows
+            all_star_date = {
+                "2006-07": "2007-02-18",
+                "2007-08": "2008-02-17",
+                "2008-09": "2009-02-15",
+            }.get(folder.name)
+        if all_star_date is None:
             raise ValueError(f"{folder.name}: no All-Star date found in games.csv")
 
     game_dates = {g["game_id"]: g["game_date"] for g in schedule if regular_season_game(g)}

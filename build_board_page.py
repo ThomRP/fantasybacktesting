@@ -14,6 +14,7 @@ Usage:
   .\\.venv\\Scripts\\python.exe build_board_page.py
 """
 
+import argparse
 import json
 import math
 from collections import defaultdict
@@ -395,7 +396,7 @@ def build_live_2026_27_s2_cands(data, prior_s, prev2_s, births_prior, target_pro
     return s2_cands
 
 
-def build_all_seasons_payload(data: Path, scoring_name: str = "default"):
+def build_all_seasons_payload(data: Path, scoring_name: str = "default", min_train_season: str = "2016-17", cv_folds: int = 6, recency_halflife=None):
     _, scoring = de.resolve_scoring(scoring_name)
     seasons_dirs, season_data, births_cache, profiles_cache = de.load_all_completed_seasons(data, scoring)
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, played_before_all, _ = de.build_all_training_datasets(
@@ -416,9 +417,14 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default"):
                     "top4_pct": float(row["top4_pct"]),
                 }
 
-    eval_seasons = sorted(adp_pool_by_s)
+    eff_min_s = None if (not min_train_season or str(min_train_season).lower() == "all") else str(min_train_season)
+    train_adp_seasons = sorted(s for s in adp_pool_by_s if eff_min_s is None or s >= eff_min_s)
+    eval_seasons = [s for s in train_adp_seasons if len(adp_pool_by_s[s]) >= 156]
+    if len(eval_seasons) <= 2:
+        eval_seasons = train_adp_seasons
     development, holdout = eval_seasons[:-2], eval_seasons[-2:]
-    cv_seasons = development[2:][-6:]
+    cv_eligible = [s for s in development if sum(1 for ts in train_adp_seasons if ts < s) >= 2]
+    cv_seasons = cv_eligible[-cv_folds:] if cv_eligible else development[1:]
     all_targets = [(s, "cv") for s in cv_seasons] + [(s, "holdout") for s in holdout]
     if (data / "2026-27" / "adp.csv").is_file():
         all_targets.append(("2026-27", "live"))
@@ -436,13 +442,13 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default"):
         # Strict zero-leakage training cutoff (matches draft_engine.py --backtest exactly!)
         if split == "holdout":
             cutoff = development[-1]
-            tr_pv = [r for s, grp in pure_vet_by_s.items() if s <= cutoff for r in grp]
-            tr_pr = [r for s, grp in pure_rk_by_s.items() if s <= cutoff for r in grp]
-            tr_adp = [r for s, grp in adp_pool_by_s.items() if s <= cutoff for r in grp]
+            tr_pv = [r for s, grp in pure_vet_by_s.items() if (eff_min_s is None or s >= eff_min_s) and s <= cutoff for r in grp]
+            tr_pr = [r for s, grp in pure_rk_by_s.items() if (eff_min_s is None or s >= eff_min_s) and s <= cutoff for r in grp]
+            tr_adp = [r for s, grp in adp_pool_by_s.items() if (eff_min_s is None or s >= eff_min_s) and s <= cutoff for r in grp]
         else:
-            tr_pv = [r for s, grp in pure_vet_by_s.items() if s < target_s for r in grp]
-            tr_pr = [r for s, grp in pure_rk_by_s.items() if s < target_s for r in grp]
-            tr_adp = [r for s, grp in adp_pool_by_s.items() if s < target_s for r in grp]
+            tr_pv = [r for s, grp in pure_vet_by_s.items() if (eff_min_s is None or s >= eff_min_s) and s < target_s for r in grp]
+            tr_pr = [r for s, grp in pure_rk_by_s.items() if (eff_min_s is None or s >= eff_min_s) and s < target_s for r in grp]
+            tr_adp = [r for s, grp in adp_pool_by_s.items() if (eff_min_s is None or s >= eff_min_s) and s < target_s for r in grp]
 
         adp_entries = de.read_adp_entries(data / target_s / "adp.csv")
         if is_live:
@@ -466,7 +472,7 @@ def build_all_seasons_payload(data: Path, scoring_name: str = "default"):
                     pb_prior.update(season_data[y]["players"].keys())
 
         # Fit Stage 2 Residual (lam=0.50 with late-ADP ramp)
-        res_s2 = de.fit_predict_residual_unified(tr_adp, s2_cands, prior_s["waiver_fppg"], lam=0.50)
+        res_s2 = de.fit_predict_residual_unified(tr_adp, s2_cands, prior_s["waiver_fppg"], lam=0.50, recency_halflife=recency_halflife)
         peer_center = median(res_s2["scaled_edges"][i] for i, r in enumerate(s2_cands) if r["market_rank"] <= 150)
         for i, r in enumerate(s2_cands):
             r["model_proj"] = round(float(res_s2["residual_proj"][i]), 2)
@@ -1093,6 +1099,63 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .call-miss { color: var(--neg); background: var(--neg-bg); border-color: var(--neg-bd); }
   .call-agree { color: var(--muted); background: var(--card-soft); border-color: var(--border); font-weight: 600; }
 
+  /* Plain-English Explainer Box */
+  .intro-box {
+    background: var(--card);
+    border: 1px solid var(--accent-bd);
+    border-left: 4px solid var(--accent);
+    border-radius: 12px;
+    padding: 13px 16px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow);
+  }
+  .intro-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .intro-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .intro-title span {
+    color: var(--accent);
+    margin-right: 6px;
+  }
+  .intro-toggle {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--muted);
+    background: var(--card-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+  .intro-toggle:hover { color: var(--accent); border-color: var(--accent-bd); }
+  .intro-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 14px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .intro-box.collapsed .intro-grid { display: none; }
+  .intro-step-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 3px;
+  }
+  .intro-step-body {
+    font-size: 12.5px;
+    color: var(--ink-2);
+    line-height: 1.45;
+  }
+
   footer {
     margin-top: 18px;
     font-size: 12px;
@@ -1113,6 +1176,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
     <div class="header-meta" id="header-meta"></div>
   </header>
+
+  <section class="intro-box" id="intro-box">
+    <div class="intro-head">
+      <div class="intro-title"><span>&#9679;</span>What This Board Is Trying to Do (In Plain English)</div>
+      <button class="intro-toggle" id="intro-toggle">Hide</button>
+    </div>
+    <div class="intro-grid">
+      <div>
+        <div class="intro-step-title">1. Reward Full-Season Reliability, Not Just Per-Game Hype</div>
+        <div class="intro-step-body">A star who averages 45 fantasy points but only plays 40 games leaves a hole in your lineup all winter. Every player here is projected on a <strong>65-game season scale</strong> (counting missed games as an average waiver-wire pickup), so durable players naturally move ahead of injury risks.</div>
+      </div>
+      <div>
+        <div class="intro-step-title">2. Beat the Draft Room, Don&rsquo;t Ignore It</div>
+        <div class="intro-step-body">Consensus ADP already prices in summer trades and obvious injuries. Instead of guessing from scratch, this board starts from ADP and hunts for habits drafters repeat every year&mdash;like overpaying for hyped rookies and aging names while sleeping on young, healthy starters.</div>
+      </div>
+      <div>
+        <div class="intro-step-title">3. How to Draft With It</div>
+        <div class="intro-step-body">Look for green <strong style="color:var(--pos)">Edge</strong> and <strong style="color:var(--pos)">+&Delta;Rk</strong> numbers&mdash;those are players our board likes more than your league-mates do. Skip big red fades, watch your league&rsquo;s <strong>4-Center limit</strong>, and let green targets fall to you in the middle and late rounds.</div>
+      </div>
+    </div>
+  </section>
 
   <div class="season-bar" id="season-bar"></div>
 
@@ -1171,6 +1255,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <span><code>Act Rk</code> Actual NBA rank at game</span>
       <span><code>vs ADP</code> Actual AdjFPPG minus ADP slot</span>
       <span><code>Call</code> Grades |Edge| &ge; 0.25 or |&Delta;Rk| &ge; 3</span>
+      <span><code>Rank Flips</code> % of player pairs where the model reversed ADP order and picked the higher scorer</span>
     </div>
   </div>
 
@@ -1203,7 +1288,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <footer>
     <span>Strict out-of-sample pre-season projections (ESPN default scoring)</span>
-    <span>8-Yr Backtest (1,152 drafts): +1,966.5 FPTS Default / +2,467.3 FPTS Yahoo (Reach-vs-Wait)</span>
+    <span>8-Yr Backtest (5,760 drafts, 720/yr): +1,920.7 FPTS Default / +2,477.6 FPTS Yahoo (Reach-vs-Wait)</span>
   </footer>
 </div>
 
@@ -1362,7 +1447,7 @@ function renderSeasonBar() {
 
   let simHtml = "";
   if (S.sim_wait) {
-    simHtml = `Sim: <strong>${fmtSignedInt(S.sim_wait.diff)} FPTS</strong> &middot; ${S.sim_wait.win_pct.toFixed(0)}% Win`;
+    simHtml = `Sim (720 drafts): <strong>${fmtSignedInt(S.sim_wait.diff)} FPTS</strong> &middot; ${S.sim_wait.win_pct.toFixed(1)}% Win`;
   } else {
     simHtml = `Live season &middot; ${S.max_step} team-games`;
   }
@@ -1496,7 +1581,7 @@ function renderAll() {
       label: "Edge Correlation (r)",
       val: `${corrAll >= 0 ? "+" : ""}${corrAll.toFixed(3)}`,
       cls: corrAll >= 0 ? "pos" : "neg",
-      sub: `<strong>${flipsPct.toFixed(1)}%</strong> rank flips won (${flipsWon}/${flipsTotal})`,
+      sub: `<span title="Out of every pair of Top-150 players where our model flipped ADP order (ranked a later-ADP player ahead of an earlier-ADP player), how often did our higher-ranked player actually outscore them?"><strong>${flipsPct.toFixed(1)}%</strong> rank flips won (${flipsWon}/${flipsTotal})</span>`,
     },
     {
       label: "Deep Sleepers (151–225)",
@@ -1688,6 +1773,11 @@ document.getElementById("edge-chart").addEventListener("click", e => {
   document.getElementById("game-slider").value = state.step + 1;
   renderAll();
 });
+document.getElementById("intro-toggle").addEventListener("click", e => {
+  const box = document.getElementById("intro-box");
+  const collapsed = box.classList.toggle("collapsed");
+  e.currentTarget.textContent = collapsed ? "Show" : "Hide";
+});
 document.getElementById("guide-toggle").addEventListener("click", e => {
   const drawer = document.getElementById("guide-drawer");
   const open = drawer.classList.toggle("open");
@@ -1738,14 +1828,27 @@ selectSeason(APP.default_season);
 
 
 def main():
-    data = Path("data")
-    print("Building multi-season strict out-of-sample replay payload (6 CV + 2 Holdout + Live 2026-27)...")
-    payload = build_all_seasons_payload(data, scoring_name="default")
+    parser = argparse.ArgumentParser(description="Build interactive multi-season draft board & replay HTML.")
+    parser.add_argument("--data", type=Path, default=Path("data"))
+    parser.add_argument("--scoring", default="default")
+    parser.add_argument("--min-train-season", default="2016-17", help="earliest training season (default: 2016-17; use 2014-15 or 2008-09 for expanded archive)")
+    parser.add_argument("--cv-folds", type=int, default=6, help="number of CV seasons to include (default: 6; use 10 with --min-train-season 2008-09 for all 13 seasons 2014-15..2026-27)")
+    parser.add_argument("--recency-halflife", type=float, default=None, help="optional exponential recency half-life in seasons")
+    parser.add_argument("--out", type=Path, default=Path("board_2026_27.html"), help="output HTML file path")
+    args = parser.parse_args()
+
+    print(f"Building multi-season strict out-of-sample replay payload (min_train={args.min_train_season}, cv_folds={args.cv_folds}, hl={args.recency_halflife})...")
+    payload = build_all_seasons_payload(
+        args.data,
+        scoring_name=args.scoring,
+        min_train_season=args.min_train_season,
+        cv_folds=args.cv_folds,
+        recency_halflife=args.recency_halflife,
+    )
     json_blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     html = HTML_TEMPLATE.replace("__PAYLOAD_JSON__", json_blob)
-    out_path = Path("board_2026_27.html")
-    out_path.write_text(html, encoding="utf-8")
-    print(f"Wrote {out_path.resolve()} ({len(html):,} bytes, {len(payload['season_order'])} seasons)")
+    args.out.write_text(html, encoding="utf-8")
+    print(f"Wrote {args.out.resolve()} ({len(html):,} bytes, {len(payload['season_order'])} seasons)")
 
 
 if __name__ == "__main__":
