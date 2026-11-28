@@ -151,6 +151,7 @@ VET_RESIDUAL_FEATURES = (
     "age30_x_low_g", "young_x_post_mpg", "log_adp_x_age30",
     "yoy_fppg_delta", "yoy_mpg_delta", "two_yr_weighted_fppg",
     "two_yr_games_avg", "no_prev2_season", "adp_platform_std", "espn_vs_avg",
+    "changed_team", "net_vacated_pos_mpg", "net_vacated_val",
 )
 
 VET_RES_MPG_FEATURES = (
@@ -158,6 +159,7 @@ VET_RES_MPG_FEATURES = (
     "age_at_prior_break", "age_under_24", "age_over_30", "prior_games", "prior_mpg",
     "prior_start_pct", "prior_post_break_mpg_chg", "yoy_mpg_delta", "two_yr_games_avg", "no_prev2_season",
     "adp_platform_std", "espn_vs_avg",
+    "changed_team", "net_vacated_pos_mpg", "net_vacated_val",
 )
 
 VET_RES_FPPM_FEATURES = (
@@ -165,6 +167,7 @@ VET_RES_FPPM_FEATURES = (
     "age_at_prior_break", "age_under_24", "age_over_30", "prior_fppm", "prior_mpg",
     "prior_tp_pct", "yoy_fppg_delta", "two_yr_weighted_fppg", "no_prev2_season",
     "adp_platform_std", "espn_vs_avg",
+    "changed_team", "net_vacated_val",
 )
 
 VET_RES_AVAIL_FEATURES = (
@@ -1034,8 +1037,8 @@ def load_season_custom(folder, scoring, prior_births=None):
     }
 
 
-def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, prior_name, next_s=None):
-    """Build a returning-veteran feature row from Year 0 & Year -1 box scores + age (0% ADP)."""
+def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, prior_name, next_s=None, roster_turnover=None):
+    """Build a returning-veteran feature row from Year 0 & Year -1 box scores + age (0% ADP) + optional pre-Opening-Night roster turnover."""
     pr = prior_s["players"][aid]
     p2 = prev2_s["players"].get(aid) if prev2_s is not None else None
     all_star = prior_s["all_star_date"]
@@ -1051,6 +1054,7 @@ def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, pri
     au24_val = float(age_under_24 or 0.0)
     pg_val = float(pr["games"]) if pr.get("games") is not None else REF_GAMES
     pmpg_chg = float(pr.get("post_mpg_chg") or 0.0)
+    rt = (roster_turnover.get(aid) or roster_turnover.get(name_key(pr["display_name"]))) if roster_turnover else None
 
     row = {
         "prior_season": prior_name,
@@ -1085,6 +1089,9 @@ def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, pri
         "two_yr_weighted_fppg": (0.65 * pr["fppg"] + 0.35 * p2["fppg"]) if p2 else pr["fppg"],
         "two_yr_games_avg": (0.5 * (pr["games"] + p2["games"])) if p2 else float(pr["games"]),
         "no_prev2_season": 0.0 if p2 else (1.0 if prev2_s is not None else None),
+        "changed_team": rt["changed_team"] if rt is not None else (0.0 if roster_turnover is not None else None),
+        "net_vacated_pos_mpg": rt["net_vacated_pos_mpg"] if rt is not None else (0.0 if roster_turnover is not None else None),
+        "net_vacated_val": rt["net_vacated_val"] if rt is not None else (0.0 if roster_turnover is not None else None),
         "draft_pick": None, "log_draft_pick": None, "is_top3_pick": None, "is_lottery_pick": None,
         "is_undrafted": None, "is_redshirt": None, "rookie_age": None, "height_inches": None,
         "team_top8_avg_age": None, "team_prior_win_pct": None, "team_vet30_min_share": None, "team_prior_top150_count": None,
@@ -1096,6 +1103,94 @@ def make_vet_feature_row(aid, prior_s, prev2_s, prior_births, target_season, pri
     if next_s is not None:
         attach_next_outcome(row, aid, next_s)
     return row
+
+
+def load_preseason_rosters(data):
+    """Load strictly pre-Opening-Night (`last_tx_date < opening_night`) roster snapshots (`data/preseason_rosters.csv`)."""
+    path = Path(data) / "preseason_rosters.csv"
+    if not path.is_file():
+        return None
+    by_season = defaultdict(dict)
+    for row in read_csv(path):
+        s = (row.get("season") or "").strip()
+        op = (row.get("opening_night") or "").strip()
+        tx = (row.get("last_tx_date") or "").strip()
+        if not s:
+            continue
+        if tx and op and tx >= op:
+            continue  # hard zero-leakage guard
+        rec = {
+            "prior_team": (row.get("prior_team") or "").strip(),
+            "oct_team": (row.get("oct_team") or "").strip(),
+        }
+        aid = (row.get("athlete_id") or "").strip()
+        pk = (row.get("player_key") or "").strip()
+        if aid:
+            by_season[s][aid] = rec
+        if pk:
+            by_season[s][pk] = rec
+    return dict(by_season) if by_season else None
+
+
+def compute_season_roster_turnover(target_season, prior_s, preseason_rosters):
+    """Compute leak-free offseason `changed_team`, `net_vacated_pos_mpg`, and `net_vacated_val` for `target_season`."""
+    if not preseason_rosters or target_season not in preseason_rosters:
+        return None
+    s_rosters = preseason_rosters[target_season]
+    waiver = float(prior_s["waiver_fppg"])
+
+    def _pgrp(ptup):
+        p0 = ptup[0] if ptup else "SG"
+        return "C" if p0 == "C" else ("G" if p0 in ("PG", "SG") else "F")
+
+    prior_rot = {}
+    for aid, p in prior_s["players"].items():
+        k = name_key(p["display_name"])
+        rm = s_rosters.get(aid) or s_rosters.get(k)
+        if rm is None:
+            continue
+        mpg82 = (p["total_minutes"] / 82.0) if p["total_minutes"] > 0 else 0.0
+        val_w = max(0.0, float(p["adj_fppg"]) - waiver)
+        prior_rot[aid] = {
+            "key": k,
+            "mpg82": mpg82,
+            "val": val_w,
+            "pos": _pgrp(p["primary_pos"]),
+            "prior_tm": rm["prior_team"],
+            "oct_tm": rm["oct_team"],
+        }
+
+    vac_pos_mpg = defaultdict(float)
+    vac_val = defaultdict(float)
+    oct_by_tm = defaultdict(list)
+    for aid, info in prior_rot.items():
+        ptm, otm = info["prior_tm"], info["oct_tm"]
+        if ptm and otm != ptm:
+            vac_pos_mpg[(ptm, info["pos"])] += info["mpg82"]
+            vac_val[ptm] += info["val"]
+        if otm:
+            oct_by_tm[otm].append((aid, info))
+
+    out = {}
+    for aid, info in prior_rot.items():
+        ptm, otm = info["prior_tm"], info["oct_tm"]
+        changed = 1.0 if (otm and ptm and otm != ptm) else 0.0
+        if otm:
+            mates = [m for maid, m in oct_by_tm[otm] if maid != aid]
+            add_pos = sum(m["mpg82"] for m in mates if m["prior_tm"] != otm and m["pos"] == info["pos"])
+            add_val = sum(m["val"] for m in mates if m["prior_tm"] != otm)
+            net_pos = vac_pos_mpg[(otm, info["pos"])] - add_pos
+            net_v = vac_val[otm] - add_val
+        else:
+            net_pos = net_v = 0.0
+        rec = {
+            "changed_team": changed,
+            "net_vacated_pos_mpg": round(net_pos, 3),
+            "net_vacated_val": round(net_v, 3),
+        }
+        out[aid] = rec
+        out[info["key"]] = rec
+    return out
 
 
 def load_vegas_preseason_odds(data):
@@ -1713,7 +1808,7 @@ def load_all_completed_seasons(data, scoring):
     return seasons_dirs, season_data, births_cache, profiles_cache
 
 
-def build_eval_adp_pool(data, year, seasons_dirs, season_data, births_cache, profiles_cache, played_before_prior, history_available, max_pool_adp=225.0, vegas_odds=None):
+def build_eval_adp_pool(data, year, seasons_dirs, season_data, births_cache, profiles_cache, played_before_prior, history_available, max_pool_adp=225.0, vegas_odds=None, preseason_rosters=None):
     """Build full-pool ADP candidate rows for year -> year+1 with both pure-stats and ADP-residual features."""
     prior_s = season_data[year]
     next_s = season_data.get(year + 1)
@@ -1723,6 +1818,8 @@ def build_eval_adp_pool(data, year, seasons_dirs, season_data, births_cache, pro
     adp_path = seasons_dirs[year + 1] / "adp.csv"
     entries = read_adp_entries(adp_path)
     next_profs = profiles_cache.get(year + 1, {})
+    eff_rosters = preseason_rosters if preseason_rosters is not None else load_preseason_rosters(data)
+    rt_map = compute_season_roster_turnover(target_name, prior_s, eff_rosters)
 
     ids_prior = defaultdict(set)
     for aid, p in prior_s["players"].items():
@@ -1785,7 +1882,7 @@ def build_eval_adp_pool(data, year, seasons_dirs, season_data, births_cache, pro
             seen_ids.add(aid)
 
         if player_type == "returning_vet":
-            row = make_vet_feature_row(aid, prior_s, prev2_s, births_cache.get(year, {}), target_name, prior_name, next_s=next_s)
+            row = make_vet_feature_row(aid, prior_s, prev2_s, births_cache.get(year, {}), target_name, prior_name, next_s=next_s, roster_turnover=rt_map)
             row["player"] = entry["player"]
         elif player_type == "rookie":
             prof = next_profs.get(aid, {}) if aid is not None else {}
@@ -1836,6 +1933,7 @@ def build_all_training_datasets(data, seasons_dirs, season_data, births_cache, p
     pure_rk_by_s = defaultdict(list)
     adp_pool_by_s = {}
     vegas_odds = load_vegas_preseason_odds(data)
+    preseason_rosters = load_preseason_rosters(data)
 
     for year in sorted(season_data):
         if history_available and year >= FIRST_ARCHIVE_YEAR:
@@ -1887,7 +1985,7 @@ def build_all_training_datasets(data, seasons_dirs, season_data, births_cache, p
             adp_pool_by_s[target_name] = build_eval_adp_pool(
                 data, year, seasons_dirs, season_data, births_cache, profiles_cache,
                 set(played_before), history_available, max_pool_adp=max_pool_adp,
-                vegas_odds=vegas_odds,
+                vegas_odds=vegas_odds, preseason_rosters=preseason_rosters,
             )
 
     return pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, played_before, history_available
@@ -2214,7 +2312,7 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, wait_lam=DEFAULT_WAI
         for strat in BACKTEST_STRATEGIES:
             sim_seasons.append(agg(records_season[(s, sp, strat)], {"season": s, "split": sp, "strategy": strat}))
 
-    print(f"\n================ 12-TEAM ESPN DRAFT SIMULATOR (Stage 1 Pure Stats vs. Stage 2 Residual lam={lam:.2f} / Wait lam={wait_lam:.2f}) ================")
+    print(f"\n================ {n_teams}-TEAM ESPN DRAFT SIMULATOR (Stage 1 Pure Stats vs. Stage 2 Residual lam={lam:.2f} / Wait lam={wait_lam:.2f}) ================")
     print(f"Rules: {n_teams}T x {n_rounds}R | PG,SG,SF,PF,C,G,F,3xUTIL + 3 BE | Max {max_centers} Primary C | R1 straight ADP, R2-13 Uniform[-{adp_var:g},+{adp_var:g}] | Wait(sig={surv_sigma:.1f}, m={surv_margin:.1f})")
     print(f"Trials: {trials_per_slot} x {n_teams} slots = {trials_per_slot * n_teams} drafts/season | Seed: {seed}")
 
@@ -2273,7 +2371,7 @@ def run_espn_backtest_sim(season_eval_bundles, *, lam=0.50, wait_lam=DEFAULT_WAI
     return sim_summary, sim_seasons
 
 
-def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None, use_advanced_stats=False, min_train_season="2016-17", recency_halflife=None, report_suffix=""):
+def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LAM, holdout_seasons=2, cv_folds=6, max_pool_adp=225.0, skip_sim=False, trials_per_slot=12, adp_var=2.0, seed=None, use_advanced_stats=False, min_train_season="2016-17", recency_halflife=None, report_suffix="", n_teams=12):
     seasons_dirs, season_data, births_cache, profiles_cache = load_all_completed_seasons(data, scoring)
     pure_vet_by_s, pure_rk_by_s, adp_pool_by_s, _, _ = build_all_training_datasets(
         data, seasons_dirs, season_data, births_cache, profiles_cache, max_pool_adp=max_pool_adp,
@@ -2364,7 +2462,7 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LA
                 fpts_mat[idx, d] = pts
             tot_fpts.append(float(sum(day_map.values())))
 
-        if len(cands) >= 156:
+        if len(cands) >= n_teams * 13:
             sim_bundles[target_s] = {
                 "split": split, "players": cands,
                 "played_mat": played_mat, "played_lists": played_mat.tolist(),
@@ -2435,7 +2533,7 @@ def run_backtest(data, scoring_name, scoring, lam=0.50, wait_lam=DEFAULT_WAIT_LA
 
     if not skip_sim and sim_bundles:
         sim_summary, sim_seasons = run_espn_backtest_sim(
-            sim_bundles, lam=lam, wait_lam=wait_lam, trials_per_slot=trials_per_slot, adp_var=adp_var, seed=seed,
+            sim_bundles, lam=lam, wait_lam=wait_lam, n_teams=n_teams, trials_per_slot=trials_per_slot, adp_var=adp_var, seed=seed,
         )
         write_csv(data / f"draft_engine_sim_summary_{tag}.csv", sim_summary)
         write_csv(data / f"draft_engine_sim_by_season_{tag}.csv", sim_seasons)
@@ -2560,6 +2658,7 @@ def generate_live_board(
         target_profs = {}
     prior_profs = profiles_cache.get(prior_year, {})
     vegas_odds = load_vegas_preseason_odds(data)
+    rt_live = compute_season_roster_turnover(target_season, prior_s, load_preseason_rosters(data))
 
     # Build candidates
     cands = []
@@ -2631,7 +2730,7 @@ def generate_live_board(
             seen_keys.add(key)
 
             if ptype == "returning_vet":
-                row = make_vet_feature_row(aid, prior_s, prev2_s, births_cache.get(prior_year, {}), target_season, prior_name)
+                row = make_vet_feature_row(aid, prior_s, prev2_s, births_cache.get(prior_year, {}), target_season, prior_name, roster_turnover=rt_live)
                 row["player"] = entry["player"]
             elif ptype == "rookie":
                 if key in csv_rk_by_key:
@@ -2887,6 +2986,7 @@ def main():
     parser.add_argument("--holdout-seasons", type=int, default=2, help="latest draft seasons held out in --backtest (default: 2)")
     parser.add_argument("--cv-folds", type=int, default=6, help="max chronological CV folds in --backtest (default: 6)")
     parser.add_argument("--trials-per-slot", type=int, default=12, help="Monte Carlo drafts per slot in --backtest (default: 12)")
+    parser.add_argument("--teams", type=int, default=12, help="number of teams in simulated draft leagues (default: 12)")
     parser.add_argument("--adp-var", type=float, default=2.0, help="villain R2-13 Uniform ADP noise bound (default: 2.0)")
     parser.add_argument("--skip-sim", action="store_true", help="skip the 12-team ESPN simulator in --backtest")
     parser.add_argument("--advanced-stats", action="store_true", help="opt-in: enable local BPM/VORP/On-Off/USG%% extension")
@@ -2940,6 +3040,7 @@ def main():
                 min_train_season=args.min_train_season,
                 recency_halflife=args.recency_halflife,
                 report_suffix=args.report_suffix,
+                n_teams=args.teams,
             )
     except (OSError, ValueError, KeyError, csv.Error) as error:
         parser.exit(1, f"Draft engine failed: {error}\n")

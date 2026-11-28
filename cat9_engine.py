@@ -22,7 +22,7 @@ from statistics import mean
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import HuberRegressor
+from sklearn.linear_model import HuberRegressor, RidgeCV
 from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -529,6 +529,7 @@ def fit_predict_cat9_unified(
     lam_late=None,
     recency_halflife=None,
     drop_platform_feats=False,
+    n_teams=12,
 ):
     """Fit unified 9-Cat residual model (37.5% Huber + 37.5% Avail*PerGameZ + 25% Shallow L1 GBDT + Rookie Huber)."""
     tr_vets = [
@@ -759,6 +760,39 @@ def fit_predict_cat9_unified(
         cur_tot = float(base_vec @ w9)
         shift = (final_proj[i] - cur_tot) / w_sum
         proj_cat_z[i] = base_vec + shift * np.where(w9 > 0, 1.0, 0.0)
+
+    # Upgrade returning-vet category shapes with 9 regularized RidgeCV heads (5-for-5 Punt CV & Holdout winner)
+    cat_shape_feats = (
+        "log_adp", "z_mkt", "age_at_prior_break", "age_under_24", "age_over_30",
+        "prior_games", "prior_mpg", "prior_start_pct", "prior_post_break_mpg_chg", "yoy_mpg_delta",
+    )
+    tr_cat_v = [r for r in tr_vets if r.get("z_prior_vec") is not None and r.get("z_actual_vec") is not None]
+    ev_cat_idx = [i for i in ev_vet_idx if evaluated_all[i].get("z_prior_vec") is not None]
+    if len(tr_cat_v) >= 60 and ev_cat_idx:
+        f_act = de.active_features(tr_cat_v, cat_shape_feats)
+        if f_act:
+            X_tr_b = de.to_matrix(tr_cat_v, f_act)
+            X_ev_b = de.to_matrix([evaluated_all[i] for i in ev_cat_idx], f_act)
+            tr_pvec = np.array([r["z_prior_vec"] for r in tr_cat_v], dtype=float)
+            ev_pvec = np.array([evaluated_all[i]["z_prior_vec"] for i in ev_cat_idx], dtype=float)
+            tr_avec = np.array([r["z_actual_vec"] for r in tr_cat_v], dtype=float)
+            pred_c = np.zeros((len(ev_cat_idx), 9), dtype=float)
+            cat_alphas = np.logspace(0, 3.5, 18)
+            for c_i in range(9):
+                X_tr_c = np.column_stack([X_tr_b, tr_pvec[:, c_i], tr_pvec])
+                X_ev_c = np.column_stack([X_ev_b, ev_pvec[:, c_i], ev_pvec])
+                c_pipe = make_pipeline(
+                    SimpleImputer(strategy="median", keep_empty_features=True),
+                    StandardScaler(),
+                    RidgeCV(alphas=cat_alphas),
+                )
+                c_pipe.fit(X_tr_c, tr_avec[:, c_i])
+                pred_c[:, c_i] = c_pipe.predict(X_ev_c)
+            act_mask = np.where(w9 > 0, 1.0, 0.0)
+            for k_pos, idx in enumerate(ev_cat_idx):
+                blended = 0.5 * pred_c[k_pos] + 0.5 * proj_cat_z[idx]
+                shift = (final_proj[idx] - float(blended @ w9)) / w_sum
+                proj_cat_z[idx] = blended + shift * act_mask
 
     return {
         "residual_proj": final_proj,
@@ -1154,7 +1188,7 @@ def run_cat9_backtest_sim(
     if not quiet:
         opp_tag = "Yahoo ADP" if opp_use_yahoo_adp else "FantasyPros AVG"
         waiv_tag = " + 65g Waiver Fill" if waiver_fill_roto else ""
-        print(f"\n================ 12-TEAM 9-CAT MULTI-FORMAT SIMULATOR (Opps: {opp_tag}, var=+-{adp_var:g}{waiv_tag}) ================")
+        print(f"\n================ {n_teams}-TEAM 9-CAT MULTI-FORMAT SIMULATOR (Opps: {opp_tag}, var=+-{adp_var:g}{waiv_tag}) ================")
         print(f"Rules: {n_teams}T x {n_rounds}R | PG,SG,SF,PF,C,G,F,3xUTIL + 3 BE | Max {max_centers} Primary C | {trials_per_slot * n_teams} drafts/season | Seed: {seed}")
         for split_label, title in (("cv", "CV SEASONS"), ("holdout", "HOLDOUT SEASONS"), ("all", "ALL SEASONS COMBINED")):
             rows = [r for r in sim_summary if r["split"] == split_label]
@@ -1225,6 +1259,7 @@ def _build_sim_bundles(
     wait_lam=DEFAULT_WAIT_LAM,
     recency_halflife=None,
     drop_platform_feats=False,
+    n_teams=12,
 ):
     board_rows_by_split = defaultdict(list)
     sim_bundles = {}
@@ -1288,7 +1323,7 @@ def _build_sim_bundles(
                 player_tot11[idx] += v11
                 player_wk11[idx, int(day_to_week[d_idx])] += v11
 
-        if len(cands) >= 156:
+        if len(cands) >= n_teams * 13:
             sim_bundles[target_s] = {
                 "split": split,
                 "players": cands,
@@ -1329,6 +1364,7 @@ def run_cat9_backtest(
     skip_sim=False,
     stress_test=False,
     report_suffix="",
+    n_teams=12,
 ):
     w9 = make_cat_weights(to_weight=to_weight)
     seasons_dirs, season_data, births_cache, profiles_cache, cat9_by_year = load_all_cat9_seasons(data)
@@ -1348,7 +1384,7 @@ def run_cat9_backtest(
 
     board_rows_by_split, sim_bundles, final_meta = _build_sim_bundles(
         scored_seasons, development, holdout, cat9_pools, cat9_by_year, w9, eff_min_s,
-        lam=lam, wait_lam=wait_lam, recency_halflife=recency_halflife,
+        lam=lam, wait_lam=wait_lam, recency_halflife=recency_halflife, n_teams=n_teams,
     )
 
     print(f"================ UNIFIED 9-CAT DRAFT ENGINE BACKTEST (TO weight={to_weight:.2f}, lam={lam:.2f}, wait_lam={wait_lam:.2f}) ================")
@@ -1417,7 +1453,7 @@ def run_cat9_backtest(
 
     if not skip_sim and sim_bundles:
         sim_summary, sim_seasons = run_cat9_backtest_sim(
-            sim_bundles, trials_per_slot=trials_per_slot, adp_var=adp_var, seed=seed,
+            sim_bundles, n_teams=n_teams, trials_per_slot=trials_per_slot, adp_var=adp_var, seed=seed,
         )
         write_csv(data / f"cat9_engine_sim_summary_{tag}.csv", sim_summary)
         write_csv(data / f"cat9_engine_sim_by_season_{tag}.csv", sim_seasons)
@@ -1670,6 +1706,7 @@ def main():
     parser.add_argument("--holdout-seasons", type=int, default=2, help="untouched final seasons for holdout (default: 2)")
     parser.add_argument("--cv-folds", type=int, default=6, help="expanding-window CV seasons (default: 6)")
     parser.add_argument("--trials-per-slot", type=int, default=12, help="sim drafts per draft slot per season (default: 12)")
+    parser.add_argument("--teams", type=int, default=12, help="number of teams in simulated draft leagues (default: 12)")
     parser.add_argument("--adp-var", type=float, default=2.0, help="opponent Uniform[-v, +v] ADP noise in R2-13 (default: 2.0)")
     parser.add_argument("--skip-sim", action="store_true", help="skip the 12-team simulator in --backtest")
     parser.add_argument("--stress-test", action="store_true", help="run built-in skeptic stress tests (Yahoo ADP, +-6 noise, waiver fill, no platform feats)")
@@ -1721,6 +1758,7 @@ def main():
                 skip_sim=args.skip_sim,
                 stress_test=args.stress_test,
                 report_suffix=args.report_suffix,
+                n_teams=args.teams,
             )
     except (OSError, ValueError, KeyError, csv.Error) as err:
         parser.exit(1, f"9-Cat engine failed: {err}\n")
